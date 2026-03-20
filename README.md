@@ -23,8 +23,8 @@ A hands‑on home‑lab built on a Dell laptop running Proxmox VE. Demonstrates 
 
 ## 🔧 Overview
 
->This project documents a compact, production‑inspired home‑lab used to learn and demonstrate virtualization, networking, VPNs, DNS automation, and container services.
->The lab is intentionally small and reproducible so others can replicate or adapt it.
+This project documents a compact, production‑inspired home‑lab used to learn and demonstrate virtualization, networking, VPNs, DNS automation, and container services.
+The lab is intentionally small and reproducible so others can replicate or adapt it.
 
 ---
 
