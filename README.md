@@ -73,14 +73,14 @@ A simplified diagram is available in /docs/network-diagram.md and /docs/network-
 
 - Software / Services
 
-    Proxmox VE (bare‑metal Type 1 hypervisor; version noted in /docs/versions.md)
-    Sophos Home Firewall (virtualized inside Proxmox as a VM)
-    Ubuntu — guest OS in OCI for StrongSwan peer (and any other Linux VMs)
-    StrongSwan (IPsec implementation on Ubuntu VM)
-    BIND9 (container for local DNS + DDNS emulation)
-    Samba (container for file sharing)
-    DYNU (DDNS provider)
-    Cisco Umbrella (upstream DNS filtering; resolvers listed above)
+   - Proxmox VE (bare‑metal Type 1 hypervisor; version noted in /docs/versions.md)
+   - Sophos Home Firewall (virtualized inside Proxmox as a VM)
+   - Ubuntu — guest OS in OCI for StrongSwan peer (and any other Linux VMs)
+   - StrongSwan (IPsec implementation on Ubuntu VM)
+   - BIND9 (container for local DNS + DDNS emulation)
+   - Samba (container for file sharing)
+   - DYNU (DDNS provider)
+   - Cisco Umbrella (upstream DNS filtering; resolvers listed above)
 
 ---
 
