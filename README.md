@@ -7,16 +7,16 @@ A hands‑on home‑lab built on a Dell laptop running Proxmox VE. Demonstrates 
 
 ## 📚 Table of contents
 
-- [Overview](#overview)
-- [Goals](#goals)
-- [Network topology](#network-topology)
-- [Hardware and software inventory](#hardware-and-software-inventory)
-- [Getting started](#getting-started)
-- [Configuration highlights](#configuration-highlights)
-- [Documentation and diagrams](#documentation-and-diagrams)
-- [Contributing](#contributing)
-- [Roadmap](#roadmap)
-- [License](#license)
+- [Overview](#-overview)
+- [Goals](#-goals)
+- [Network topology](#-network-topology)
+- [Hardware and software inventory](#-hardware-and-software-inventory)
+- [Getting started](#-getting-started)
+- [Configuration highlights](#-configuration-highlights)
+- [Documentation and diagrams](#-documentation-and-diagrams)
+- [Contributing](#-contributing)
+- [Roadmap](#-roadmap)
+- [License](#-license)
   
 ---
 
