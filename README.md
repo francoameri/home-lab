@@ -30,7 +30,7 @@ This is a permanent work-in-progress. I will be updating this repo consistently 
 
 ### Local network (10.0.0.0/24)
 
-10.0.0.1 — Sophos Home Firewall (virtualized VM in Proxmox) edge; handles VPN, NAT, DHCP, VPN IPSec.
+10.0.0.1 — Sophos Home Firewall (virtualized VM in Proxmox) edge; handles VPN, NAT, DHCP.
 
     DHCP range: 10.0.0.100–10.0.0.199 (served by Sophos DHCP).
 
