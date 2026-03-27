@@ -2,21 +2,6 @@
 
 Short summary  
 A hands‑on home‑lab built on a Dell laptop running Proxmox VE. Demonstrates a hybrid network with a Sophos home firewall (virtualized), StrongSwan site‑to‑site IPsec to an OCI Ubuntu VM, local DNS/DDNS emulation, and lightweight file sharing. This repo documents design decisions, configuration snippets, deployment steps, automation, and lessons learned for engineers and hiring managers.
-
----
-
-## 📚 Table of contents
-
-- [Overview](#-overview)
-- [Goals](#-goals)
-- [Network topology](#-network-topology)
-- [Hardware and software inventory](#-hardware-and-software-inventory)
-- [Getting started](#-getting-started)
-- [Configuration highlights](#-configuration-highlights)
-- [Documentation and diagrams](#-documentation-and-diagrams)
-- [Contributing](#-contributing)
-- [Roadmap](#-roadmap)
-- [License](#-license)
   
 ---
 
@@ -83,26 +68,6 @@ A simplified diagram is available in /docs/network-diagram.md and /docs/network-
 
 ---
 
-🚀 Getting started
-
-- Why clone this repo?
-  To obtain copy‑ready configuration snippets, automation playbooks, diagrams, and verification scripts so you can reproduce or adapt the lab quickly. The repo contains everything needed to provision VMs/CTs, configure VPNs and DNS, and run the verification/self‑healing checks described below.
-
-- Clone and inspect:
-
-```
-git clone https://github.com/<you>/home-lab.git
-cd home-lab
-```
-
-- Read /docs/quickstart.md for step‑by‑step provisioning of the Proxmox host, VM/CT creation, and initial configuration.
-
-- Use the provided automation in /automation (Ansible playbooks, scripts) to provision and configure services.
-
-- Review /configs for sample config files (StrongSwan, Sophos snippets, BIND9, Samba) and /scripts for verification and self‑healing helpers.
-
----
-
 ## ⚙️ Configuration highlights
 
 - StrongSwan: sample ipsec.conf and ipsec.secrets with comments and secure parameter recommendations. Runs on Ubuntu VM in OCI.
@@ -110,51 +75,6 @@ cd home-lab
 - BIND9: dynamic update examples and a script that emulates DDNS updates from DHCP leases (local DNS at 10.0.0.201).
 - Samba: minimal secure share configuration for cross‑platform testing.
 - Proxmox: notes on storage layout (NVMe for host/ISOs, SATA for VMs/CTs), backup recommendations, and VM templates.
-
-See /configs for full examples and /docs/security.md for hardening notes. Do not commit secrets — use *.example templates for secrets.
-
----
-
-## 🤖 Automation and self‑healing
-
-This repo includes automation and basic self‑healing capabilities designed to make the lab reproducible and resilient.
-
-- What you’ll find in /automation and /scripts
-
-  - Ansible playbooks to provision Proxmox VMs/CTs, deploy BIND9 and Samba containers, and apply baseline hardening.
-  - Provisioning scripts for initial host setup (partitioning, Proxmox install notes, storage configuration).
-  - Verification scripts (scripts/verify.sh) that run checks such as:
-    - ipsec statusall and journalctl checks for StrongSwan health.
-    - dig/nslookup against 10.0.0.201 and upstream Umbrella resolvers.
-    - smbclient checks for Samba shares.
-
-  - Self‑healing helpers:
-    - Lightweight watchdog scripts that restart failed services (e.g., restart BIND9 if zone updates fail).
-    - Ansible playbooks that can be re-run idempotently to restore desired state.
-    - Health‑check cron jobs that report status to local logs and optionally trigger remediation playbooks.
-
-  - Templates and examples:
-    - ipsec.secrets.example, named.conf.local.example, smb.conf.example — safe to copy and fill.
-    - automation/restore-playbook.yml — example playbook to restore a VM or reapply network config.
-
-How to use
-
-- Run automation/bootstrap.yml once to provision the baseline.
-- Add the repo to your CI or a local cron job to run scripts/verify.sh periodically.
-- Use the automation/repair.yml playbook to attempt automated remediation when checks fail.
-
----
-
-## 📄 Documentation and diagrams
-
-All documentation lives in /docs. Key files:
-
-- quickstart.md — bootstrap steps and minimal commands.
-- network-diagram.md — ASCII + Mermaid diagrams; network-diagram.svg for visual reference.
-- automation.md — how to run playbooks and scripts; how self‑healing works.
-- configs/ — copy‑ready config snippets.
-- changelog.md — lab changes and lessons learned.
-- versions.md — software versions used during testing.
 
 ## 🤝 Contributing
 
@@ -171,6 +91,7 @@ See CONTRIBUTING.md for templates and expectations.
 Planned items:
 
 - Add automated backups for VMs/CTs.
+- Migrate containers to Docker. Integrate Kubernetes.
 - Integrate monitoring (Prometheus + Grafana) with alerting.
 - Add CI checks for config syntax and playbook linting.
 - Expand self‑healing to include snapshot rollback for critical VMs.
