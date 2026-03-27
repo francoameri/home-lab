@@ -30,7 +30,7 @@ This is a permanent work-in-progress. I will be updating this repo consistently 
 
 ### Local network (10.0.0.0/24)
 
-10.0.0.1 — Sophos Home Firewall (virtualized VM in Proxmox) edge; handles VPN, NAT, DHCP.
+10.0.0.1 — Sophos Home Firewall (virtualized VM in Proxmox) edge; handles VPN, NAT, DHCP, VPN IPSec.
 
     DHCP range: 10.0.0.100–10.0.0.199 (served by Sophos DHCP).
 
@@ -42,6 +42,8 @@ This is a permanent work-in-progress. I will be updating this repo consistently 
 
 ### Remote / Cloud
 
+    OCI Private LAN: 172.16.0.0/16.
+    
     OCI Ubuntu VM 172.16.1.99 — StrongSwan peer for site‑to‑site IPsec (Ubuntu is listed as software below).
 
     DYNU used for DDNS to handle ISP public IP rotation.
@@ -65,6 +67,7 @@ A simplified diagram is available in /docs/network-diagram.md and /docs/network-
    - Proxmox VE (bare‑metal Type 1 hypervisor; version noted in /docs/versions.md)
    - Sophos Home Firewall (virtualized inside Proxmox as a VM)
    - Ubuntu — guest OS in OCI for StrongSwan peer (and any other Linux VMs)
+   - OCI Cloud (Network & Instances)
    - StrongSwan (IPsec implementation on Ubuntu VM)
    - BIND9 (container for local DNS + DDNS emulation)
    - Samba (container for file sharing)
