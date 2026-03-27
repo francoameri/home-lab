@@ -53,7 +53,7 @@ This is a permanent work-in-progress. I will be updating this repo consistently 
     Cisco Umbrella resolvers used for upstream DNS filtering: 208.67.222.222 and 208.67.220.220.
 
 ```
-[HomeLab](./images/HomeLab.jpg)
+![HomeLab](./images/HomeLab.jpg)
 ```
 
 ---
