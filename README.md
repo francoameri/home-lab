@@ -1,6 +1,6 @@
 # 🔧 Home‑Lab — Hybrid Proxmox Lab with Site‑to‑Site VPN
 
-Short summary  
+**Short summary  **
 A hands‑on home‑lab built on a Dell laptop running Proxmox VE. Demonstrates a hybrid network with a Sophos home firewall (virtualized), StrongSwan site‑to‑site IPsec to an OCI Ubuntu VM, local DNS/DDNS emulation, and lightweight file sharing. This repo documents design decisions, configuration snippets, deployment steps, automation, and lessons learned for engineers and hiring managers.
   
 ---
@@ -9,6 +9,11 @@ A hands‑on home‑lab built on a Dell laptop running Proxmox VE. Demonstrates 
 
 This project documents a compact, production‑inspired home‑lab used to learn and demonstrate virtualization, networking, VPNs, DNS automation, and container services.
 The lab is intentionally small and reproducible so others can replicate or adapt it.
+
+---
+
+## ⚠️ Disclaimer
+This is a permanent work-in-progress. I will be updating this repo consistently throughout time. Expect changes soon!
 
 ---
 
