@@ -54,6 +54,8 @@ This is a permanent work-in-progress. I will be updating this repo consistently 
 
 ![HomeLab](./images/HomeLab.jpg)
 
+![HomeLab](./images/HomeLabv2.jpg)
+
 ---
 
 ## 🧾 Hardware and software inventory
