@@ -76,13 +76,13 @@ flowchart LR
 
     subgraph CLOUD["Oracle Cloud (OCI) -- VCN 172.16.0.0/16"]
         direction TB
-        UBUNTU["Ubuntu 24.04 VM<br/>StrongSwan peer<br/>172.16.1.99 / public 164.152.249.176"]
+        UBUNTU["Ubuntu 24.04 VM<br/>StrongSwan peer<br/>172.16.1.99<br/>public 164.152.249.176"]
     end
 
-    SOPHOS -->|WAN vmbr0| ONT
-    BIND -.->|updates public IP| DYNU
-    ONT ==>|IPsec site-to-site<br/>IKEv2, PSK| UBUNTU
-    UBUNTU -.->|resolves home via| DYNU
+    SOPHOS -->|WAN| ONT
+    BIND -.->|updates IP| DYNU
+    ONT ==>|IPsec tunnel| UBUNTU
+    DYNU -.->|resolves home| UBUNTU
 
     classDef fw fill:#2e7d32,stroke:#1b5e20,color:#fff
     classDef svc fill:#1565c0,stroke:#0d47a1,color:#fff
@@ -118,9 +118,6 @@ Sophos's DNS API was locked to only accept calls from BIND9's IP, since BIND9 wa
 - **StrongSwan** ran the far end of the tunnel: IKEv2, PSK, `AES256/SHA256`, tunnel `172.16.0.0/16 ⇄ 10.0.0.0/24`. Stayed up continuously for 40+ days in its final stretch.
 - **DDNS (DynU):** since Sophos sat behind ISP NAT, a cron job (on the BIND9 container, not Sophos) kept `fameri-lab.ddnsfree.com` pointed at the real public IP — the OCI side found home by hostname, not by a static IP.
 
-![HomeLab](./images/HomeLab.jpg)
-![HomeLab](./images/HomeLabv2.png)
-
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
 
 ---
@@ -149,7 +146,7 @@ Sophos's DNS API was locked to only accept calls from BIND9's IP, since BIND9 wa
 - **Samba** – single authenticated share (`valid users = fameri`), used as a quick secure internal file-transfer channel. See [`Samba.md`](./Samba.md).
 - **Sophos** – default-accept policy for LAN↔LAN/WAN/VPN on common services, explicit bidirectional rules for the OCI tunnel, IPS + web filtering + NDR threat intelligence, weekly encrypted config backups emailed out automatically. Full write-up in [`firewall.md`](./firewall.md).
 - **Site-to-site + remote-access VPN** – IKEv2 IPsec tunnel to an Oracle Cloud VM, plus SSL VPN for remote access. The double-NAT/DDNS problem-solving is the most interesting piece — full write-up in [`vpn.md`](./vpn.md).
-- **Proxmox networking** – `vmbr0` (WAN, Sophos VM only) and `vmbr1` (LAN, Sophos + host) bridges over the laptop's USB Ethernet and onboard NIC.
+- **Proxmox** – a two-disk (host / LVM-thin guest pool) and two-bridge (`vmbr0` WAN, `vmbr1` LAN) design; one firewall VM + two lean LXCs. Full write-up in [`proxmox.md`](./proxmox.md).
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
 
@@ -172,10 +169,12 @@ Real bugs and gaps that only became visible once the lab had run a while — ful
 ## 🔗 Related documentation
 
 - [`journey.md`](./journey.md) — the build narrative: how the lab grew one skill at a time, and what I found looking back.
+- [`proxmox.md`](./proxmox.md) — the hypervisor foundation: storage, bridges, guests, VM-vs-LXC reasoning.
 - [`firewall.md`](./firewall.md) — the Sophos firewall in full: zones, rules, NAT, DHCP, security services.
 - [`vpn.md`](./vpn.md) — the site-to-site VPN end to end, spanning Sophos and the Oracle Cloud side.
 - [`BIND9.md`](./BIND9.md) — the self-built dynamic DNS service in full.
 - [`Samba.md`](./Samba.md) — the authenticated file share.
+- [`configs/`](./configs/) — the real config files behind all of the above (secrets redacted).
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
 

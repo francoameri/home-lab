@@ -1,0 +1,31 @@
+# /etc/network/interfaces  (Proxmox host: amerinfra, 10.0.0.200)
+# Two bridges: vmbr0 = WAN (Sophos VM only), vmbr1 = LAN (Sophos + host + LXCs)
+
+auto lo
+iface lo inet loopback
+
+iface nic0 inet manual
+iface nic1 inet manual
+iface enx7cc2c6449e1b inet manual
+
+# WAN bridge for Sophos VM only
+auto vmbr0
+iface vmbr0 inet manual
+    bridge_ports nic0
+    bridge_stp off
+    bridge_fd 0
+
+# LAN bridge for Sophos + Proxmox host
+auto vmbr1
+iface vmbr1 inet static
+    address 10.0.0.200/24
+    gateway 10.0.0.1
+    bridge_ports enx7cc2c6449e1b
+    bridge_stp off
+    bridge_fd 0
+
+# Wireless NIC gets DHCP from Sophos
+auto wlp5s0
+iface wlp5s0 inet manual
+
+source /etc/network/interfaces.d/*

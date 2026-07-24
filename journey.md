@@ -34,7 +34,7 @@ Built between November 2025 and April 2026, then kept running a few more months 
 ## 🖥️ Step 1 — Virtualization first
 
 It started simple: **Proxmox VE**, installed bare-metal on a repurposed Dell laptop, purely to build real hands-on virtualization skills — creating VMs and containers, understanding storage layout, getting comfortable with a Type 1 hypervisor instead of running VirtualBox on top of a desktop OS.  
-Everything else in this lab exists because this first step gave me a platform to build on.
+Everything else in this lab exists because this first step gave me a platform to build on. Full detail in [`proxmox.md`](./proxmox.md).
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
 
@@ -118,6 +118,7 @@ With everything I learned here, I've since started building a new lab.
 ## 🔗 Related documentation
 
 - [`README.md`](./README.md) — full lab overview, topology, and inventory.
+- [`proxmox.md`](./proxmox.md) — the hypervisor foundation.
 - [`firewall.md`](./firewall.md) — the Sophos firewall config in full.
 - [`vpn.md`](./vpn.md) — the site-to-site VPN, end to end.
 - [`BIND9.md`](./BIND9.md) — the self-built dynamic DNS service.

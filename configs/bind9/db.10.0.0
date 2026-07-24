@@ -1,0 +1,19 @@
+; /var/lib/bind/db.10.0.0  -- reverse zone
+$ORIGIN .
+$TTL 604800     ; 1 week
+0.0.10.in-addr.arpa     IN SOA  bind9.lab.lan. admin.lab.lan. (
+                                10         ; serial
+                                604800     ; refresh (1 week)
+                                86400      ; retry (1 day)
+                                2419200    ; expire (4 weeks)
+                                604800     ; minimum (1 week)
+                                )
+                        NS      bind9.lab.lan.
+$ORIGIN 0.0.10.in-addr.arpa.
+1                       PTR     sophos.lab.lan.
+$TTL 300        ; 5 minutes
+100                     PTR     FAmeri.lab.lan.
+$TTL 604800     ; 1 week
+200                     PTR     proxmox.lab.lan.
+201                     PTR     bind9.lab.lan.
+202                     PTR     samba.lab.lan.

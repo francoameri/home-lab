@@ -1,0 +1,6 @@
+# root crontab on the BIND9 LXC
+# NOTE: the DynU password is REDACTED here; the */120 schedule bug is documented in BIND9.md.
+
+*/5 * * * * scp -i /root/.ssh/sophos_key admin@10.0.0.1:/tmp/dhcpd.leases.live /var/tmp/sophos-leases.live && /usr/local/bin/sync-leases.sh
+*/120 * * * * /usr/local/bin/check-bind9.sh
+*/5 * * * * curl -s "https://api.dynu.com/nic/update?hostname=fameri-lab.ddnsfree.com&username=fameri&password=<REDACTED>" > /dev/null 2>&1

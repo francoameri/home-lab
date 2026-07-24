@@ -1,0 +1,21 @@
+; /var/lib/bind/db.lab.lan  -- forward zone
+$ORIGIN .
+$TTL 604800     ; 1 week
+lab.lan                 IN SOA  bind9.lab.lan. admin.lab.lan. (
+                                16         ; serial
+                                604800     ; refresh (1 week)
+                                86400      ; retry (1 day)
+                                2419200    ; expire (4 weeks)
+                                604800     ; minimum (1 week)
+                                )
+                        NS      bind9.lab.lan.
+$ORIGIN lab.lan.
+bind9                   A       10.0.0.201
+$TTL 300        ; 5 minutes
+fameri                  A       10.0.0.100
+$TTL 604800     ; 1 week
+proxmox                 A       10.0.0.200
+samba                   A       10.0.0.202
+sophos                  A       10.0.0.1
+$TTL 300        ; 5 minutes
+test                    A       10.0.0.250

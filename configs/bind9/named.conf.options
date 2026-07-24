@@ -1,0 +1,24 @@
+// /etc/bind/named.conf.options
+options {
+    directory "/var/cache/bind";
+    recursion yes;
+    allow-query { any; };
+
+    // Explicitly listen on localhost and LAN IP
+    listen-on { 127.0.0.1; 10.0.0.201; };
+
+    forwarders {
+        10.0.0.1;           // Sophos
+        208.67.222.222;     // Cisco Umbrella
+        208.67.220.220;     // Cisco Umbrella
+    };
+};
+
+logging {
+    channel update_debug {
+        file "/var/log/named-update.log";
+        severity debug 3;
+        print-time yes;
+    };
+    category update { update_debug; };
+};
