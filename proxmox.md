@@ -136,7 +136,7 @@ This split is the single most important resource decision in the lab, so it's wo
 
 ---
 
-## 🏷️ Keywords
+## 🔑 Keywords
 
 `Proxmox VE` · `virtualization` · `Type 1 hypervisor` · `KVM` · `LXC` · `LVM-thin` · `thin provisioning` · `Linux bridge` · `vmbr` · `unprivileged container` · `i7-6700HQ` · `homelab`
 
@@ -144,6 +144,6 @@ This split is the single most important resource decision in the lab, so it's wo
 
 ---
 
-## 📝 License
-
-This repository is shared for educational purposes. Please respect usage guidelines and credit appropriately when reusing content.
+✍️ Authored by **Franco [francoameri]**
+📜 Licensed under [CC BY 4.0](https://github.com/francoameri/francoameri/blob/main/LICENSE.md)
+Please credit the original author when sharing or adapting this work.

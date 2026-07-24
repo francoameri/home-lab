@@ -205,7 +205,7 @@ Building both was a deliberate hands-on comparison of SSL vs. IPsec remote acces
 
 ---
 
-## 🏷️ Keywords
+## 🔑 Keywords
 
 `IPsec` · `site-to-site VPN` · `IKEv2` · `StrongSwan` · `Sophos` · `Oracle Cloud` · `OCI` · `double NAT` · `NAT traversal` · `NAT-T` · `DDNS` · `DynU` · `pre-shared key` · `MODP2048` · `DH group 14` · `AES-256` · `Dead Peer Detection` · `VCN` · `security list` · `route table` · `homelab`
 
@@ -213,6 +213,6 @@ Building both was a deliberate hands-on comparison of SSL vs. IPsec remote acces
 
 ---
 
-## 📝 License
-
-This repository is shared for educational purposes. Please respect usage guidelines and credit appropriately when reusing content.
+✍️ Authored by **Franco [francoameri]**
+📜 Licensed under [CC BY 4.0](https://github.com/francoameri/francoameri/blob/main/LICENSE.md)
+Please credit the original author when sharing or adapting this work.

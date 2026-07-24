@@ -156,7 +156,7 @@ Sophos served three VPN roles at once — full detail in [`vpn.md`](./vpn.md):
 
 ---
 
-## 🏷️ Keywords
+## 🔑 Keywords
 
 `Sophos` · `firewall` · `SFVH` · `zones` · `NAT` · `SNAT` · `DHCP` · `IPS` · `web filtering` · `application control` · `NDR` · `local service ACL` · `IPsec` · `SSL VPN` · `public-key auth` · `Proxmox VM` · `double NAT` · `network security` · `homelab`
 
@@ -164,6 +164,6 @@ Sophos served three VPN roles at once — full detail in [`vpn.md`](./vpn.md):
 
 ---
 
-## 📝 License
-
-This repository is shared for educational purposes. Please respect usage guidelines and credit appropriately when reusing content.
+✍️ Authored by **Franco [francoameri]**
+📜 Licensed under [CC BY 4.0](https://github.com/francoameri/francoameri/blob/main/LICENSE.md)
+Please credit the original author when sharing or adapting this work.

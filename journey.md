@@ -128,7 +128,7 @@ With everything I learned here, I've since started building a new lab.
 
 ---
 
-## 🏷️ Keywords
+## 🔑 Keywords
 
 `homelab` · `Proxmox VE` · `virtualization` · `Sophos` · `firewall` · `BIND9` · `dynamic DNS` · `Samba` · `StrongSwan` · `IPsec` · `site-to-site VPN` · `Oracle Cloud` · `OCI` · `remote access VPN` · `continuous learning`
 
@@ -136,6 +136,6 @@ With everything I learned here, I've since started building a new lab.
 
 ---
 
-## 📝 License
-
-This repository is shared for educational purposes. Please respect usage guidelines and credit appropriately when reusing content.
+✍️ Authored by **Franco [francoameri]**
+📜 Licensed under [CC BY 4.0](https://github.com/francoameri/francoameri/blob/main/LICENSE.md)
+Please credit the original author when sharing or adapting this work.

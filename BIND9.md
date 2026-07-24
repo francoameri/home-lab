@@ -218,7 +218,7 @@ All under [`configs/bind9/`](./configs/bind9/): `named.conf.local`, `named.conf.
 
 ---
 
-## 🏷️ Keywords
+## 🔑 Keywords
 
 `BIND9` · `dynamic DNS` · `DDNS` · `nsupdate` · `TSIG` · `hmac-sha256` · `DHCP` · `forward zone` · `reverse zone` · `PTR` · `SOA` · `TTL` · `recursion` · `forwarders` · `Cisco Umbrella` · `cron` · `Debian LXC` · `DNSSEC` · `homelab`
 
@@ -226,6 +226,6 @@ All under [`configs/bind9/`](./configs/bind9/): `named.conf.local`, `named.conf.
 
 ---
 
-## 📝 License
-
-This repository is shared for educational purposes. Please respect usage guidelines and credit appropriately when reusing content.
+✍️ Authored by **Franco [francoameri]**
+📜 Licensed under [CC BY 4.0](https://github.com/francoameri/francoameri/blob/main/LICENSE.md)
+Please credit the original author when sharing or adapting this work.
