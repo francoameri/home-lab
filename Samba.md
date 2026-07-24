@@ -85,6 +85,8 @@ A single local Unix user, `fameri`, with `unix password sync = yes` keeping the 
 
 - [`README.md`](./README.md) — full lab overview and topology.
 - [`journey.md`](./journey.md) — where this share fit into the build story.
+- [`firewall.md`](./firewall.md) — the Sophos firewall fronting this network.
+- [`vpn.md`](./vpn.md) — the site-to-site VPN.
 - [`BIND9.md`](./BIND9.md) — the other LXC service on this lab.
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>

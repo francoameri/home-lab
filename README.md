@@ -52,37 +52,44 @@ Everything below reflects the lab's **actual final state**, reconstructed direct
 
 ## 🗺️ Network topology
 
-```
-                                   INTERNET
-                                      │
-                          ┌───────────┴───────────┐
-                          │   ISP router (Claro)   │   ← Sophos sits behind
-                          │   hands Sophos a        │      the ISP's own NAT
-                          │   private 192.168.1.x   │      (double NAT)
-                          └───────────┬───────────┘
-                                      │ WAN (vmbr0)
-   ┌──────────────────────────────────┴──────────────────────────────────┐
-   │  PROXMOX VE  (bare-metal Dell laptop, 10.0.0.200)                     │
-   │                                                                       │
-   │   ┌────────────────────┐                                             │
-   │   │ Sophos Home FW (VM) │  10.0.0.1  — edge, NAT, DHCP, VPN endpoint  │
-   │   └─────────┬──────────┘                                             │
-   │             │ LAN (vmbr1) 10.0.0.0/24                                 │
-   │   ┌─────────┴──────────┬─────────────────────┐                       │
-   │   │ BIND9 LXC          │ Samba LXC           │                       │
-   │   │ 10.0.0.201         │ 10.0.0.202          │                       │
-   │   │ dynamic DNS        │ authenticated share │                       │
-   │   └────────────────────┴─────────────────────┘                       │
-   └───────────────────────────────────────────────────────────────────────┘
-                                      │
-                    IPsec site-to-site tunnel (IKEv2, PSK)
-                    fameri-lab.ddnsfree.com  ⇄  164.152.249.176
-                                      │
-                          ┌───────────┴───────────┐
-                          │  ORACLE CLOUD (OCI)    │
-                          │  Ubuntu 24.04 + StrongSwan │
-                          │  172.16.1.99 / VCN 172.16.0.0/16 │
-                          └────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph HOME["Home / On-Premise -- LAN 10.0.0.0/24"]
+        direction TB
+        DEV["Devices / AP<br/>(DHCP clients)"]
+        subgraph VIRT["Virtualization Layer -- Proxmox VE<br/>(Dell laptop, 10.0.0.200)"]
+            direction TB
+            SOPHOS["Sophos Home FW (VM)<br/>10.0.0.1<br/>Gateway / NAT / DHCP"]
+            BIND["BIND9 (LXC)<br/>10.0.0.201<br/>DNS / DDNS updater"]
+            SAMBA["Samba (LXC)<br/>10.0.0.202<br/>file share"]
+        end
+        DEV --> SOPHOS
+        SOPHOS --- BIND
+        SOPHOS --- SAMBA
+    end
+
+    subgraph ISPZONE["ISP Zone -- double NAT -- 192.168.1.0/24"]
+        direction TB
+        ONT["ISP router / ONT (Claro)<br/>hands Sophos a private 192.168.1.x"]
+        DYNU["DynU DDNS<br/>fameri-lab.ddnsfree.com"]
+    end
+
+    subgraph CLOUD["Oracle Cloud (OCI) -- VCN 172.16.0.0/16"]
+        direction TB
+        UBUNTU["Ubuntu 24.04 VM<br/>StrongSwan peer<br/>172.16.1.99 / public 164.152.249.176"]
+    end
+
+    SOPHOS -->|WAN vmbr0| ONT
+    BIND -.->|updates public IP| DYNU
+    ONT ==>|IPsec site-to-site<br/>IKEv2, PSK| UBUNTU
+    UBUNTU -.->|resolves home via| DYNU
+
+    classDef fw fill:#2e7d32,stroke:#1b5e20,color:#fff
+    classDef svc fill:#1565c0,stroke:#0d47a1,color:#fff
+    classDef cloud fill:#e65100,stroke:#bf360c,color:#fff
+    class SOPHOS fw
+    class BIND,SAMBA svc
+    class UBUNTU cloud
 ```
 
 ### Local network (`10.0.0.0/24`)
@@ -140,8 +147,8 @@ Sophos's DNS API was locked to only accept calls from BIND9's IP, since BIND9 wa
 
 - **BIND9** – TSIG-keyed dynamic zone (`lab.lan` forward + `0.0.10.in-addr.arpa` reverse), fed by a cron-driven sync script parsing Sophos's DHCP lease file. See [`BIND9.md`](./BIND9.md).
 - **Samba** – single authenticated share (`valid users = fameri`), used as a quick secure internal file-transfer channel. See [`Samba.md`](./Samba.md).
-- **Sophos** – default-accept policy for LAN↔LAN/WAN/VPN on common services, explicit bidirectional rules for the OCI tunnel, IPS + web filtering + NDR threat intelligence, weekly encrypted config backups emailed out automatically.
-- **Remote access VPN** – an SSL VPN profile was the one actually used day-to-day; a separate IPsec remote-access profile existed but was never put into real use.
+- **Sophos** – default-accept policy for LAN↔LAN/WAN/VPN on common services, explicit bidirectional rules for the OCI tunnel, IPS + web filtering + NDR threat intelligence, weekly encrypted config backups emailed out automatically. Full write-up in [`firewall.md`](./firewall.md).
+- **Site-to-site + remote-access VPN** – IKEv2 IPsec tunnel to an Oracle Cloud VM, plus SSL VPN for remote access. The double-NAT/DDNS problem-solving is the most interesting piece — full write-up in [`vpn.md`](./vpn.md).
 - **Proxmox networking** – `vmbr0` (WAN, Sophos VM only) and `vmbr1` (LAN, Sophos + host) bridges over the laptop's USB Ethernet and onboard NIC.
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
@@ -165,6 +172,8 @@ Real bugs and gaps that only became visible once the lab had run a while — ful
 ## 🔗 Related documentation
 
 - [`journey.md`](./journey.md) — the build narrative: how the lab grew one skill at a time, and what I found looking back.
+- [`firewall.md`](./firewall.md) — the Sophos firewall in full: zones, rules, NAT, DHCP, security services.
+- [`vpn.md`](./vpn.md) — the site-to-site VPN end to end, spanning Sophos and the Oracle Cloud side.
 - [`BIND9.md`](./BIND9.md) — the self-built dynamic DNS service in full.
 - [`Samba.md`](./Samba.md) — the authenticated file share.
 

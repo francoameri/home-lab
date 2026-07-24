@@ -43,7 +43,7 @@ Everything else in this lab exists because this first step gave me a platform to
 ## 🛡️ Step 2 — My own firewall
 
 Once Proxmox was solid, I wanted a real firewall — not a home router's built-in NAT, but something with actual policy, logging, and security features I could learn from.  
-Rather than buy dedicated hardware, I **virtualized Sophos Home Firewall** as a VM with its own bridged LAN and WAN interfaces. That gave me a genuine edge device to configure — firewall rules, IPS, web filtering, VPN endpoints — and a far better hands-on grip on infrastructure security than reading about it ever would have.
+Rather than buy dedicated hardware, I **virtualized Sophos Home Firewall** as a VM with its own bridged LAN and WAN interfaces. That gave me a genuine edge device to configure — firewall rules, IPS, web filtering, VPN endpoints — and a far better hands-on grip on infrastructure security than reading about it ever would have. Full config in [`firewall.md`](./firewall.md).
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
 
@@ -75,7 +75,7 @@ Between a couple of different operating systems and two physical machines, I nee
 Once the LAN felt solid, I wanted a real **site-to-site VPN** to an actual cloud environment, not a simulated peer.  
 I tried **AWS, GCP, and Azure** first — but their free-tier constraints kept getting in the way of what I actually wanted to build, and I didn't want to compromise the design just to fit a trial limit. **Oracle Cloud Infrastructure** turned out to be the one that let me build it properly on their Always Free tier: an Ubuntu VM running **StrongSwan**, tunneling back to Sophos over **IKEv2** with a pre-shared key.
 
-The trickiest part wasn't the VPN config itself — it was realizing that Sophos's own WAN address was never a real public IP; my ISP's own NAT sat in front of it. The fix was dynamic DNS, tracking my actual public-facing address from a script running inside the network (since Sophos itself couldn't reliably tell what its own public IP was), with the OCI side of the tunnel pointed at that hostname instead of an IP.
+The trickiest part wasn't the VPN config itself — it was realizing that Sophos's own WAN address was never a real public IP; my ISP's own NAT sat in front of it. The fix was dynamic DNS, tracking my actual public-facing address from a script running inside the network (since Sophos itself couldn't reliably tell what its own public IP was), with the OCI side of the tunnel pointed at that hostname instead of an IP. The whole tunnel, both ends, is written up in [`vpn.md`](./vpn.md).
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
 
@@ -118,6 +118,8 @@ With everything I learned here, I've since started building a new lab.
 ## 🔗 Related documentation
 
 - [`README.md`](./README.md) — full lab overview, topology, and inventory.
+- [`firewall.md`](./firewall.md) — the Sophos firewall config in full.
+- [`vpn.md`](./vpn.md) — the site-to-site VPN, end to end.
 - [`BIND9.md`](./BIND9.md) — the self-built dynamic DNS service.
 - [`Samba.md`](./Samba.md) — the authenticated file share.
 

@@ -196,6 +196,8 @@ These are documented as-found, not silently cleaned up — they're part of the l
 
 - [`README.md`](./README.md) — full lab overview and topology.
 - [`journey.md`](./journey.md) — why this DNS service was built, and the story around it.
+- [`firewall.md`](./firewall.md) — Sophos, whose DHCP leases feed this pipeline.
+- [`vpn.md`](./vpn.md) — the VPN kept reachable by this container's DDNS updater.
 - [`Samba.md`](./Samba.md) — the other LXC service on this lab.
 
 <div align="right"><a href="#-table-of-contents">↑ Back to top</a></div>
