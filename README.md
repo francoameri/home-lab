@@ -56,7 +56,7 @@ Everything below reflects the lab's **actual final state**, reconstructed direct
 flowchart LR
     subgraph HOME["Home / On-Premise -- LAN 10.0.0.0/24"]
         direction TB
-        DEV["Devices / AP<br/>(DHCP clients)"]
+        DEV["Devices<br/>(DHCP clients)"]
         subgraph VIRT["Virtualization Layer -- Proxmox VE<br/>(Dell laptop, 10.0.0.200)"]
             direction TB
             SOPHOS["Sophos Home FW (VM)<br/>10.0.0.1<br/>Gateway / NAT / DHCP"]
