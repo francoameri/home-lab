@@ -53,10 +53,9 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 
 ## 🗺️ Network topology
 
-```
+```mermaid
 flowchart TB
     WAN["WAN<br/>Double-NAT IPv4 + public IPv6 GUA"]
-
     subgraph FW["OPNsense -- Topton mini PC (Intel J6412)"]
         direction TB
         MGMT["MGMT -- untagged<br/>192.168.100.0/24 · .254<br/>firewall + switch + AP only"]
@@ -67,11 +66,9 @@ flowchart TB
         VPN1["OpenVPN #1 -- udp/1194<br/>personal, split-tunnel"]
         VPN2["OpenVPN #2 -- udp/1195<br/>friends, full-tunnel, hardened"]
     end
-
     SW["UniFi Switch Lite 16 PoE<br/>L2 trunk -- router-on-a-stick"]
     AP["UniFi AP<br/>TRUSTED / GUEST / IOT SSIDs"]
     PVE["Proxmox VE host<br/>vlan-aware bridge<br/>hosts UniFi OS Server"]
-
     WAN --> FW
     FW === SW
     SW --- AP
@@ -80,7 +77,6 @@ flowchart TB
     SW -.-> IOT
     SW -.-> GUEST
     SERVERS --- PVE
-
     classDef fw fill:#2e7d32,stroke:#1b5e20,color:#fff
     classDef svc fill:#1565c0,stroke:#0d47a1,color:#fff
     classDef guest fill:#b71c1c,stroke:#7f0000,color:#fff
