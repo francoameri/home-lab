@@ -52,13 +52,13 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 
 ## Network topology
 
-**Hardware:** Topton mini PC (Intel J6412), 4× Intel i226-V NICs, running OPNsense.
+**Hardware:** Topton mini PC (Intel N150), 4× Intel i226-V NICs, running OPNsense.
 
 | Interface | Role | Address | Notes |
 |---|---|---|---|
 | WAN | Internet | Static IPv4 behind double-NAT (ISP router) + public IPv6 GUA via DHCPv6 | The double-NAT doesn't shield IPv6 — WAN has a real routable IPv6 address. |
 | MGMT (native/untagged) | Management | 192.168.100.0/24, gateway `.254` | Stays untagged on the trunk deliberately — the one segment that's never touched during VLAN work, so a mistake elsewhere can't strand admin access. |
-| TRUSTED (VLAN 20) | Day-to-day devices, internal Wi-Fi | 192.168.120.0/24, gateway `.254` | |
+| TRUSTED (VLAN 20) | Day-to-day devices, internal Wi-Fi | 192.168.120.0/24, gateway `.254` | Full bidirectional access to SERVERS by design — see [`opnsense.md`](opnsense.md#firewall-rule-architecture). |
 | SERVERS (VLAN 30) | Proxmox host and VMs | 192.168.130.0/24, gateway `.254` | Live — hosts Pi-hole (`.200`), UniFi OS Server (`.201`), and the monitoring stack (`.202`). |
 | GUEST (VLAN 50) | Guest devices, isolated | 192.168.150.0/24, gateway `.254` | Explicit isolation rule blocks all RFC1918 destinations; internet-only. |
 | IOT (VLAN 40) | Wi-Fi casting devices | 192.168.140.0/24, gateway `.254` | Live — has its own full outbound ruleset (DNS/NTP/internet), not just inbound casting passes from TRUSTED/GUEST. |
