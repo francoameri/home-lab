@@ -1,6 +1,6 @@
 # 🖥️ Proxmox — Hypervisor, Storage, and VLAN-Aware Networking
 
-Hardware, storage strategy, the networking design that lets one bridge serve both host-level and guest-level VLAN membership, and the reasoning behind where Proxmox itself sits in the network. Cross-references to the main [`README.md`](README.md) use `§N` notation for its numbered sections.
+Hardware, storage strategy, the networking design that lets one bridge serve both host-level and guest-level VLAN membership, and the reasoning behind where Proxmox itself sits in the network. Links to other v2 docs point directly at the relevant heading — there's no numbered `§N` citation scheme, just plain markdown links.
 
 ---
 
@@ -17,7 +17,9 @@ Hardware, storage strategy, the networking design that lets one bridge serve bot
 
 ## Hardware
 
-HP EliteDesk Mini 600 G6 (i5-10500T). ZFS root.
+HP EliteDesk Mini 600 G6 — Intel i5-10500T (6C/12T), 32GB RAM, 2× 500GB NVMe SSD in a ZFS mirror (RAID1). ZFS root.
+
+> **Why it matters:** mirroring the two NVMes means a single drive failure doesn't take the hypervisor down — every guest's rootfs survives on the remaining disk while the failed one is replaced, the same resilience tradeoff a production hypervisor host makes at any scale.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -25,7 +27,7 @@ HP EliteDesk Mini 600 G6 (i5-10500T). ZFS root.
 
 ## Storage
 
-`local-zfs` — ZFS-backed, inherently thin-provisioned by default, unlike VM zvols which need it configured explicitly. All container rootfs volumes live here. A dedicated bay is reserved for a future local Proxmox Backup Server datastore once the NAS build frees it up (see main [`README.md` §Planned](README.md#-planned--not-yet-built)) — Tier-1, fast local restore, with the NAS becoming Tier-2 off-box backup afterward.
+`local-zfs` — ZFS-backed, inherently thin-provisioned by default, unlike VM zvols which need it configured explicitly. All container rootfs volumes live here, striped across the mirrored NVMe pair described above. A dedicated bay is reserved for a future local Proxmox Backup Server datastore once the NAS build frees it up (see main [`README.md` §Planned](README.md#planned--not-yet-built)) — Tier-1, fast local restore, with the NAS becoming Tier-2 off-box backup afterward.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -37,6 +39,24 @@ HP EliteDesk Mini 600 G6 (i5-10500T). ZFS root.
 
 - **Per-guest tagging.** An LXC container's own `net0` line can specify `tag=N` directly (e.g., `tag=30` for SERVERS) — the vlan-aware bridge handles tagging/untagging traffic to and from that specific guest's virtual NIC, with no separate interface needed per VLAN per guest.
 - **A dedicated host-level VLAN sub-interface.** For the Proxmox *host's own* management IP, a classic 802.1Q sub-interface (`vmbr0.30`) rides on top of the same bridge, giving the hypervisor itself a tagged presence on SERVERS without needing its own physical port.
+
+```mermaid
+flowchart TB
+    TRUNK["Physical NIC — trunk port\n(USW-Lite-16-PoE, Proxmox-Trunk profile)"] --> BR
+
+    subgraph BR["vmbr0 — bridge-vlan-aware yes, bridge-vids 2-4094"]
+        direction TB
+        HOSTIF["vmbr0.30\nhost mgmt IP\n192.168.130.253"]
+        CT200["CT 200 net0\ntag=30 -> .200"]
+        CT201["CT 201 net0\ntag=30 -> .201"]
+        CT202["CT 202 net0\ntag=30 -> .202"]
+    end
+
+    classDef host fill:#2e7d32,stroke:#1b5e20,color:#fff
+    classDef guest fill:#1565c0,stroke:#0d47a1,color:#fff
+    class HOSTIF host
+    class CT200,CT201,CT202 guest
+```
 
 ```
 auto vmbr0
@@ -68,6 +88,8 @@ The alternative considered was dual-homing — giving Proxmox a secondary addres
 
 Proxmox's management IP now lives entirely on SERVERS (VLAN 30), with no presence on MGMT at all. The tradeoff accepted deliberately: if SERVERS VLAN routing or firewall config ever breaks, the hypervisor becomes unreachable over the network, full stop — local console access becomes the only way in. Clean isolation, at the cost of losing a network-based break-glass path for the hypervisor specifically (core network gear — the firewall, switch, and AP — keep theirs on MGMT, unaffected).
 
+> **Why it matters:** this is the same "workload vs. infrastructure" boundary that governs management-plane segmentation in production networks — the systems used to *fix* a broken network stay on a segment that outages elsewhere can't touch, while everything else, however important, is treated as a workload with an accepted blast radius.
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
@@ -84,7 +106,22 @@ Proxmox's management IP now lives entirely on SERVERS (VLAN 30), with no presenc
 
 `CT 201` runs as a **privileged** LXC — a deliberate, documented exception to running everything unprivileged by default, required because UniFi OS Server's installer needs to write a specific sysctl that the kernel refuses from a non-initial user namespace (i.e., any unprivileged container). Full reasoning and the debugging path that led to this conclusion are in [`unifi.md`](unifi.md).
 
-`CT 200` and `CT 202` are both **unprivileged** LXCs (Debian 13) running Docker via Docker Compose — the default posture for anything that doesn't have `CT 201`'s specific kernel-level requirement.
+`CT 200` and `CT 202` are both **unprivileged** LXCs (Debian 13) running Docker via Docker Compose — the default posture for anything that doesn't have `CT 201`'s specific kernel-level requirement. `CT 202` was created with:
+
+```
+pct create 202 local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
+  --hostname monitoring \
+  --net0 name=eth0,bridge=vmbr0,tag=30,ip=192.168.130.202/24,gw=192.168.130.254 \
+  --storage local-zfs \
+  --rootfs local-zfs:8 \
+  --memory 2048 \
+  --cores 2 \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --onboot 1
+```
+
+`--features nesting=1` is the one flag that's easy to forget and expensive to retrofit — see [Known issues](#known-issues--lessons).
 
 Container-to-IP convention: where practical, a container's last-two-IP-digits match its Proxmox VMID (`CT 202` → `.202`), making the relationship between "which container is this" and "what's its address" readable at a glance without needing to look anything up.
 
