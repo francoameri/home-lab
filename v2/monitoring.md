@@ -1,6 +1,6 @@
 # 📊 Monitoring — Prometheus, Grafana, and Exporters
 
-A self-contained observability stack for the whole lab: host resources, container metrics, service-specific metrics (Pi-hole, OPNsense), and uptime/availability checks — built in four deliberate phases. Cross-references to [`opnsense.md`](opnsense.md), [`pihole.md`](pihole.md), [`proxmox.md`](proxmox.md), and [`unifi.md`](unifi.md) use direct-link notation.
+A self-contained observability stack for the whole lab: host resources, container metrics, service-specific metrics (Pi-hole, OPNsense), and uptime/availability checks — built in four deliberate phases. Links to [`opnsense.md`](opnsense.md), [`pihole.md`](pihole.md), [`proxmox.md`](proxmox.md), and [`unifi.md`](unifi.md) point directly at the relevant heading — there's no numbered `§N` citation scheme.
 
 ---
 
@@ -22,6 +22,35 @@ A self-contained observability stack for the whole lab: host resources, containe
 
 Prometheus pulls metrics from exporters on a schedule; Grafana queries Prometheus as its only data source and stores nothing of its own. Everything in this stack lives on one dedicated CT, deployed in four phases — core stack + host metrics, container metrics, service-specific exporters, then uptime/availability checks — rather than all at once, specifically to understand how each layer works before adding the next.
 
+```mermaid
+flowchart LR
+    subgraph TARGETS["Scrape targets"]
+        direction TB
+        NE1["node_exporter\n(Proxmox host, bare-metal)"]
+        NE2["node_exporter\n(CT 202, self)"]
+        CA["cAdvisor x3\n(CT 200 / 201 / 202)"]
+        PH["Pi-hole exporter\n(CT 200)"]
+        OP["OPNsense exporter\n(REST API)"]
+        BB["blackbox_exporter\n(/probe)"]
+    end
+
+    PROM["Prometheus\nCT 202 — pull, 15s interval"]
+    GRAF["Grafana\nCT 202 — queries Prometheus only"]
+
+    NE1 --> PROM
+    NE2 --> PROM
+    CA --> PROM
+    PH --> PROM
+    OP --> PROM
+    BB -->|"probes 4 admin UIs\n+ external connectivity"| PROM
+    PROM --> GRAF
+
+    classDef target fill:#1565c0,stroke:#0d47a1,color:#fff
+    classDef core fill:#2e7d32,stroke:#1b5e20,color:#fff
+    class NE1,NE2,CA,PH,OP,BB target
+    class PROM,GRAF core
+```
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
@@ -41,6 +70,31 @@ Runs as `CT 202` on Proxmox (SERVERS `192.168.130.202`, tag 30) — Debian 13, u
 - **Explicit IPs in every Prometheus target, not `localhost`.** Prometheus derives its `instance` label directly from the configured target address — `localhost:PORT` is ambiguous and non-self-documenting once there's more than one host in the fleet, so every target in `prometheus.yml` uses the real IP of the thing it's scraping.
 - **`node_exporter` must run on the actual physical or logical host it reports on.** A containerized instance can only ever see the container's own view of resources — it can't see the true hypervisor's CPU/RAM/disk. This is why there are two separate `node_exporter` instances: one running as a native systemd service directly on the Proxmox host itself, and one running inside `CT 202` for the monitoring stack's own self-monitoring.
 
+> **Why it matters:** pull-based scraping with self-documenting instance labels and one system of record for time series is the same architecture used by Prometheus deployments at any scale — the difference between a home-lab install and a production one here is target count, not design.
+
+```yaml
+# docker-compose.yml (excerpt) — prometheus + grafana, network_mode: host throughout
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - ./grafana/data:/var/lib/grafana
+```
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
@@ -48,6 +102,22 @@ Runs as `CT 202` on Proxmox (SERVERS `192.168.130.202`, tag 30) — Debian 13, u
 ## Phase 1 — core stack and host metrics
 
 Prometheus + Grafana + two `node_exporter` instances (Proxmox host, monitoring CT itself). Grafana's official "Node Exporter Full" community dashboard covers both out of the box, filterable by host.
+
+```yaml
+# prometheus.yml (excerpt) — Phase 1
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["192.168.130.202:9090"]
+
+  - job_name: "node-monitoring-ct"
+    static_configs:
+      - targets: ["192.168.130.202:9100"]
+
+  - job_name: "node-proxmox-host"
+    static_configs:
+      - targets: ["192.168.130.253:9100"]
+```
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -58,7 +128,16 @@ Prometheus + Grafana + two `node_exporter` instances (Proxmox host, monitoring C
 cAdvisor deployed on all three existing CTs (Pi-hole, UniFi OS, and the monitoring CT itself), reading container-level metrics via each host's container runtime socket:
 
 - **Docker CTs** (Pi-hole, monitoring): standard cAdvisor deployment against the Docker socket.
-- **The Podman CT (UniFi OS, `CT 201`):** deployed via plain `podman run` rather than Compose, since Ubiquiti's own installer owns that container runtime. Podman doesn't expose its API socket by default, so cAdvisor initially fell back to a degraded generic "Raw" cgroup-based factory — real metrics, but no container names or labels. Fixed by enabling `podman.socket` explicitly and remounting it into a recreated cAdvisor container. Also needed a port change (`--port=8081`) since cAdvisor's default 8080 collides with UniFi OS Server's own device-inform channel.
+- **The Podman CT (UniFi OS, `CT 201`):** deployed via plain `podman run` rather than Compose, since Ubiquiti's own installer owns that container runtime. Podman doesn't expose its API socket by default, so cAdvisor initially fell back to a degraded generic "Raw" cgroup-based factory — real metrics, but no container names or labels. Fixed by enabling `podman.socket` explicitly and remounting it into a recreated cAdvisor container:
+
+```
+podman run -d --name=cadvisor --restart=unless-stopped --network=host --privileged \
+  -v /:/rootfs:ro -v /var/run:/var/run:ro -v /sys:/sys:ro \
+  -v /run/podman/podman.sock:/var/run/podman/podman.sock:ro \
+  gcr.io/cadvisor/cadvisor:latest --port=8081
+```
+
+Also needed a port change (`--port=8081`) since cAdvisor's default 8080 collides with UniFi OS Server's own device-inform channel.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -68,7 +147,28 @@ cAdvisor deployed on all three existing CTs (Pi-hole, UniFi OS, and the monitori
 
 **Pi-hole** — a custom-built exporter wrapping `bazmonk/pihole6_exporter` (no official image exists), since Pi-hole v6's session-based App Password auth broke compatibility with older exporters. Full detail in [`pihole.md` §Monitoring integration](pihole.md#monitoring-integration).
 
-**OPNsense** — `ghcr.io/athennamind/opnsense-exporter`, calling OPNsense's own REST API over HTTPS with a dedicated least-privilege `monitoring-api` user and API key/secret (see [`opnsense.md` §Monitoring API access](opnsense.md#monitoring-api-access)). Every endpoint returned `context deadline exceeded` on first deploy — a plain `curl` from the Proxmox host to the firewall's SERVERS IP timed out identically, which isolated the problem to the firewall itself rather than the exporter or a routing/firewall-rule issue. Root cause: System → Settings → Administration → **Listen Interfaces** was scoped to `LAN` only, so the API/GUI daemon never bound a listening socket on SERVERS at all — indistinguishable from a firewall block until traced this specifically. Fixed by adding SERVERS to that list.
+**OPNsense** — `ghcr.io/athennamind/opnsense-exporter`, calling OPNsense's own REST API over HTTPS with a dedicated least-privilege `monitoring-api` user and API key/secret (see [`opnsense.md` §Monitoring API access](opnsense.md#monitoring-api-access)):
+
+```yaml
+  opnsense-exporter:
+    image: ghcr.io/athennamind/opnsense-exporter:latest
+    container_name: opnsense-exporter
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - OPNSENSE_EXPORTER_OPS_API_KEY=${OPNSENSE_API_KEY}
+      - OPNSENSE_EXPORTER_OPS_API_SECRET=${OPNSENSE_API_SECRET}
+    command:
+      - "--opnsense.protocol=https"
+      - "--opnsense.address=192.168.130.254"
+      - "--opnsense.insecure"
+      - "--exporter.instance-label=opnsense-fw"
+      - "--web.listen-address=:8082"
+```
+
+Every endpoint returned `context deadline exceeded` on first deploy — a plain `curl` from the Proxmox host to the firewall's SERVERS IP timed out identically, which isolated the problem to the firewall itself rather than the exporter or a routing/firewall-rule issue. Root cause: System → Settings → Administration → **Listen Interfaces** was scoped to `LAN` only, so the API/GUI daemon never bound a listening socket on SERVERS at all — indistinguishable from a firewall block until traced this specifically. Fixed by adding SERVERS to that list.
+
+> **Why it matters:** distinguishing "the service refused the connection" from "nothing is listening on that interface" from "a firewall dropped the packet" is exactly the kind of layered troubleshooting production on-call work requires — each looks identical from the client side (a timeout), and confirming which one it is (a bare `curl` from a box on the same subnet, bypassing routing/firewall entirely) is what actually narrows it down.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -77,6 +177,43 @@ cAdvisor deployed on all three existing CTs (Pi-hole, UniFi OS, and the monitori
 ## Phase 4 — uptime and availability checks
 
 `prom/blackbox-exporter`, scraped indirectly: Prometheus targets blackbox's own `/probe` endpoint with `params.module` and `target`, then uses `relabel_configs` to rewrite `__address__`/`instance` to reflect the real target rather than blackbox itself. Two modules in use:
+
+```yaml
+# blackbox.yml
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: []
+      method: GET
+      tls_config:
+        insecure_skip_verify: true
+  icmp:
+    prober: icmp
+    timeout: 5s
+```
+
+```yaml
+# prometheus.yml (excerpt) — indirect scrape pattern
+  - job_name: "blackbox_http"
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://192.168.130.200/admin/
+          - https://192.168.130.254/
+          - https://192.168.130.201:11443/
+          - http://192.168.130.202:3000/
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 192.168.130.202:9115
+```
 
 - `http_2xx` — the four admin UIs: Pi-hole, OPNsense, UniFi OS Server (port `11443`), and Grafana itself.
 - `icmp` — external connectivity, probing `1.1.1.1` (requires `cap_add: [NET_RAW]` on the container).
