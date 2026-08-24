@@ -74,14 +74,19 @@ Proxmox's management IP now lives entirely on SERVERS (VLAN 30), with no presenc
 
 ## Guests
 
-| VMID | Hostname     | Role                                   | Network                  | Status         |
-| ----- | ------------ | ---------------------------------------- | -------------------------- | --------------- |
-| 200   | —            | UniFi Network Application (Docker-based) | SERVERS `.200`            | Destroyed (superseded by 201) |
-| 201   | `unifi-os`   | UniFi OS Server (Podman, privileged LXC) | SERVERS `.201`, tag 30    | Live           |
+| VMID | Hostname     | Role                                        | Network                | Status |
+| ----- | ------------ | -------------------------------------------- | ------------------------ | ------ |
+| 200   | `pihole`     | Pi-hole (network-wide DNS + ad-blocking)     | SERVERS `.200`, tag 30  | Live   |
+| 201   | `unifi-os`   | UniFi OS Server (Podman, privileged LXC)     | SERVERS `.201`, tag 30  | Live   |
+| 202   | `monitoring` | Prometheus + Grafana + exporters             | SERVERS `.202`, tag 30  | Live   |
+
+`CT 200` was originally the Docker-based UniFi Network Application, destroyed once the migration to UniFi OS Server (`CT 201`) was confirmed stable (see [`unifi.md`](unifi.md)). Its freed VMID and IP were later reused when Pi-hole was deployed, rather than issuing a new one — consistent with the VMID-to-IP convention below.
 
 `CT 201` runs as a **privileged** LXC — a deliberate, documented exception to running everything unprivileged by default, required because UniFi OS Server's installer needs to write a specific sysctl that the kernel refuses from a non-initial user namespace (i.e., any unprivileged container). Full reasoning and the debugging path that led to this conclusion are in [`unifi.md`](unifi.md).
 
-Container-to-IP convention: where practical, a container's last-two-IP-digits match its Proxmox VMID (`CT 201` → `.201`), making the relationship between "which container is this" and "what's its address" readable at a glance without needing to look anything up.
+`CT 200` and `CT 202` are both **unprivileged** LXCs (Debian 13) running Docker via Docker Compose — the default posture for anything that doesn't have `CT 201`'s specific kernel-level requirement.
+
+Container-to-IP convention: where practical, a container's last-two-IP-digits match its Proxmox VMID (`CT 202` → `.202`), making the relationship between "which container is this" and "what's its address" readable at a glance without needing to look anything up.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -93,5 +98,6 @@ Container-to-IP convention: where practical, a container's last-two-IP-digits ma
 - **`ifreload -a` applies interface changes without a full reboot, but still drops the current session** if the interface you're connected through is the one being changed — functionally identical to a reboot from the perspective of "will this session survive," even though the rest of the system stays running throughout.
 - **A container's IP and its VMID drift apart over time if not enforced.** The convention only holds if it's actively maintained during provisioning and renumbering — it's not something Proxmox tracks or enforces on its own.
 - **Flipping `unprivileged: 0`/`1` on an existing container changes UID mapping going forward, but not retroactively** — see [`unifi.md`](unifi.md) for what happens when that assumption is wrong.
+- **Docker inside an unprivileged LXC needs `--features nesting=1` set at `pct create` time.** Without it, the container can't nest the cgroup/namespace machinery Docker itself needs, and the runtime won't start. This isn't something to retrofit cleanly after the fact — set it at creation.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
