@@ -13,7 +13,8 @@ Interfaces, VLANs, DNS/DHCP, firewall rules, and the filtering/reflection servic
 5. [GeoIP blocking](#geoip-blocking)
 6. [mDNS/SSDP reflection](#mdnsssdp-reflection)
 7. [VPN](#vpn)
-8. [Known issues & lessons](#known-issues--lessons)
+8. [Monitoring API access](#monitoring-api-access)
+9. [Known issues & lessons](#known-issues--lessons)
 
 ---
 
@@ -43,13 +44,28 @@ Unbound handles recursive resolution, DNSSEC, and DNSBL-based content filtering.
 
 The one rule that matters most operationally: **every VLAN interface needs its own DHCP range in Dnsmasq, and its own entry in both Dnsmasq's and Unbound's listener interface lists.** Neither service auto-discovers newly added interfaces — a VLAN can have a perfectly good IP scheme and gateway, and still hand out no DHCP leases and no DNS resolution at all, because one checkbox in a settings page was missed. This exact gap showed up twice during this build (once for the original TRUSTED/SERVERS/GUEST rollout, once for IOT), and is now a checked-first step any time a new VLAN is added rather than something discovered by debugging "why does this VLAN look broken."
 
+### DNS redundancy: Pi-hole primary, Unbound secondary
+
+Pi-hole ([`pihole.md`](pihole.md)) is now the primary DNS resolver advertised to every VLAN, sitting in front of this firewall's own Unbound. Since Pi-hole runs as a single container on Proxmox, it's a real single point of failure for name resolution network-wide if left as the only advertised resolver — a Proxmox host, storage, or container failure would take down DNS for every VLAN, not just ad-blocking.
+
+Each VLAN's DHCP option 6 (`dns-server`) now advertises Pi-hole first and that VLAN's own OPNsense gateway (running Unbound) second, comma-separated:
+
+| VLAN | DHCP option 6 value |
+| ---- | -------------------- |
+| TRUSTED | `192.168.130.200,192.168.120.254` |
+| GUEST | `192.168.130.200,192.168.150.254` |
+| IOT | `192.168.130.200,192.168.140.254` |
+| SERVERS | `192.168.130.200,192.168.130.254` |
+
+If Pi-hole is unreachable, clients fall back to this firewall's Unbound instance — full DNS resolution keeps working, just without Pi-hole's ad/tracker blocking, rather than the network losing DNS entirely.
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
 ## Content filtering
 
-Unbound's built-in DNSBL plugin blocks against a combination of general ad/tracker/malware lists (OISD) and a Hagezi category list, intercepting matching domains before they're ever forwarded upstream — independent of whatever upstream resolver is configured. Two DNS-over-TLS forwarders (OpenDNS) sit behind the DNSBL for everything that isn't blocked, providing encrypted upstream resolution; the actual filtering enforcement is the DNSBL layer, not the upstream provider's own category filtering.
+Unbound's built-in DNSBL plugin blocks against a combination of general ad/tracker/malware lists (OISD) and a Hagezi category list, intercepting matching domains before they're ever forwarded upstream — independent of whatever upstream resolver is configured. Two DNS-over-TLS forwarders (OpenDNS) sit behind the DNSBL for everything that isn't blocked, providing encrypted upstream resolution; the actual filtering enforcement is the DNSBL layer, not the upstream provider's own category filtering. Pi-hole's own blocklists ([`pihole.md`](pihole.md)) now sit in front of this as the first line of ad/tracker blocking for ordinary client queries; Unbound's DNSBL remains the fallback layer, active whenever a client resolves through Unbound directly (e.g., during a Pi-hole outage, per the redundancy design above).
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -57,7 +73,7 @@ Unbound's built-in DNSBL plugin blocks against a combination of general ad/track
 
 ## Firewall rule architecture
 
-OPNsense's GUI-generated rules are evaluated **top-to-bottom with first-match-wins** (`quick` is implicit on every rule the GUI creates) — this is the single most important thing to internalize before writing any rule set here, since it means order is functionally part of the rule, not just presentation.
+OPNsense's GUI-generated rules are evaluated **top-to-bottom with first-match-wins** (`quick` is implicit on every rule the GUI creates) — this is the single most important thing to internalize before writing any rule set here, since it means order is functionally part of the rule, not just presentation. **Floating rules are evaluated before interface rules**, regardless of which interface a floating rule is scoped to — a floating Block rule written for one purpose can silently catch traffic to something built long afterward if its match criteria are broad enough (see [Known issues](#known-issues--lessons)).
 
 **Shared rules, alias-based.** Rules that apply identically to TRUSTED and SERVERS (which have full bidirectional access to each other, a deliberate home-lab convenience decision) are written once per interface using a purpose-built alias (`internal_vlans`) for destination matching, rather than duplicating near-identical rules across interfaces.
 
@@ -72,6 +88,17 @@ OPNsense's GUI-generated rules are evaluated **top-to-bottom with first-match-wi
 Mixing GUEST into the shared alias-based rule set was deliberately avoided — GUEST's isolation logic needs to stay unambiguous and independently auditable, not entangled with rules that intentionally grant broad access elsewhere.
 
 **IOT access is intentionally one-directional.** TRUSTED→IOT and GUEST→IOT each get exactly one Pass rule; there's no IOT→TRUSTED or IOT→GUEST equivalent, and none is needed. OPNsense's firewall is stateful — once TRUSTED or GUEST initiates a connection to IOT, the reply traffic for that specific connection is automatically permitted back through the state table, without a separate rule. A return-path rule would only make sense if IOT devices needed to *initiate* new, unsolicited connections into TRUSTED/GUEST, which is deliberately not the design here.
+
+**IOT's own ruleset.** IOT originally had only the *inbound* casting Pass rules that TRUSTED and GUEST point at it — it had no ruleset of its own, which meant IOT devices had no DNS, no NTP, and no outbound internet access at all. This went unnoticed until an actual device (a smart TV, joined to the `IoT` SSID) tested with no internet connectivity. Fixed by cloning GUEST's rule pattern onto the IOT interface directly, adjusted for IOT's own addressing:
+
+1. Pass DNS (UDP 53) to the IOT gateway address.
+2. Pass NTP (UDP 123) to the IOT gateway address.
+3. Pass DNS to Pi-hole (`192.168.130.200`) directly.
+4. Block all further access to the firewall itself.
+5. Block all RFC1918 destinations (`private_nets_VPN_ADD`).
+6. Pass-any, last — internet access.
+
+The one correction needed while building this: rules 1–2 must target **the interface's address** (the gateway itself), not **the interface's network** (the whole `/24`) — cloning a rule from GUEST carries over whichever of the two GUEST happened to use, and the two are easy to conflate since both appear as similarly-named dropdown entries.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -104,10 +131,23 @@ Two OpenVPN instances share one CA and one tls-crypt key:
 
 ---
 
+## Monitoring API access
+
+The [monitoring stack](monitoring.md) reads live firewall state (ARP tables, gateway status, interface throughput, service status) through OPNsense's own REST API rather than SNMP or log scraping. A dedicated, least-privilege user (`monitoring-api`) was created for this specifically: no password login, no group membership, API key/secret only, scoped to the enumerated set of GUI privileges the exporter's documentation actually requires (Diagnostics: ARP Table, Firewall statistics, Netstat; Reporting: Traffic; Services: Unbound; Status: DNS Overview, IPsec, OpenVPN, Services; System: Firmware, Gateways, Settings: Cron, Status; VPN: OpenVPN Instances, WireGuard; Services: DHCP: Kea v4/v6). One documented privilege, "Status: DHCP leases," doesn't exist in this OPNsense version's privilege list — this install uses Dnsmasq for DHCP, not ISC dhcpd/Kea's DHCP leases view, so that one metric category is permanently empty for this exporter rather than a misconfiguration to keep chasing.
+
+API keys are generated from the Users list's dedicated key icon, not from within the Edit User modal — the modal itself has no API key section.
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
+
+---
+
 ## Known issues & lessons
 
 - **Multi-interface + multi-source floating rules expand into a full cross-product**, not "one rule per matching pair." Selecting three interfaces and three source networks on one rule creates a rule for *every* interface/source combination, including nonsensical ones (e.g., a rule on TRUSTED matching GUEST's source subnet). Harmless — auto-generated anti-spoofing rules already drop packets claiming the wrong subnet on the wrong interface — but it inflates the ruleset for no functional benefit. Prefer `any` for Source when interface scoping already does the real work.
 - **A rule can look "floating" by description and not be floating by schema.** Only the live ruleset (`pfctl -sr`) confirms actual evaluation order and behavior; the exported config alone can be misleading about a rule's real placement.
+- **A pre-existing floating "block DNS bypass" rule can silently break a brand-new service.** A floating rule blocking outbound UDP/53 to anywhere but the firewall itself (written before Pi-hole existed, to force all DNS through Unbound) blocked every cross-VLAN query to the newly deployed Pi-hole, with no obvious error on either side — DNS just silently failed cross-VLAN while working fine from the same subnet (see [Known issues](#known-issues--lessons) in [`pihole.md`](pihole.md) for the full symptom/root-cause trail). Floating Block rules with broad destination match criteria need to be checked whenever a new same-purpose service is added, not just interface rules.
+- **The "Invert Destination" checkbox is easy to leave checked when cloning a rule**, and produces the exact opposite of the intended rule — passing traffic to everywhere *except* the intended destination instead of only to it. The rules list renders this as `! <destination>`, which is the tell to look for.
+- **System → Settings → Administration → Listen Interfaces scopes more than just the web GUI.** If an interface isn't in that list, connections to the API/GUI on that interface hang with a full TCP-level timeout — indistinguishable from "nothing is listening" — rather than a firewall rejection. This bit the OPNsense exporter entirely (see [`monitoring.md`](monitoring.md)); the fix was adding SERVERS to the list alongside the existing LAN entry, not any firewall rule change.
 - **dnsmasq and Unbound both self-follow interface *address* changes, but not interface additions.** A new VLAN needs to be manually added to both services' interface lists — this doesn't happen automatically the way an address change on an existing interface does.
 - **A client's own DHCP lease doesn't self-heal when the gateway changes underneath it.** It keeps routing through the old, now-nonexistent gateway/DNS until its lease renews. Same-subnet access to the new address still works immediately (ARP, not routing) regardless.
 - **"Other Types" doesn't exist in this OPNsense version's menu** the way older documentation describes — VLAN interface creation lives under **Interfaces → Devices → VLAN**.
