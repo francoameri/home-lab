@@ -69,37 +69,45 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 
 **Hardware:** Topton mini PC (Intel N150, 8GB RAM, 256GB NVMe SSD), 4× Intel i226-V NICs, running OPNsense.
 
-```
-                                        INTERNET
-                                            |
-                                (WAN: static IPv4 behind
-                                 double-NAT + public IPv6 GUA)
-                                            |
-                          +-------------------------------------+
-                          |        OPNsense Firewall              |
-                          |   Topton mini PC (N150 / 8GB / 256GB) |
-                          |----------------------------------------|
-                          | Unbound (DNS) + Dnsmasq (DHCP)         |
-                          | 2x OpenVPN | GeoIP block | IDS/IPS     |
-                          +-------------------------------------+
-                             |        |         |         |        |
-              +--------------+        |         |         +-----------------+
-              |                       |         |                           |
-        [MGMT 100/24]          [TRUSTED 120/24] [SERVERS 130/24]    [GUEST 150/24]
-        native/untagged         day-to-day       Proxmox host        isolated,
-              |                 clients               |              internet-only
-        Switch + AP                              (i5-10500T, 32GB,          |
-     USW-Lite-16-PoE                              2x500GB NVMe        [IOT 140/24]
-        + U7 Lite                                 ZFS mirror)         casting devices,
-                                                        |              one-way pass
-                                     +------------------+------------------+  from TRUSTED/GUEST
-                                     |                  |                  |
-                               CT200 Pi-hole     CT201 UniFi OS     CT202 Monitoring
-                               DNS + ad-block    Server (Podman)    Prometheus + Grafana
-                               192.168.130.200   192.168.130.201    192.168.130.202
+```mermaid
+flowchart TB
+    INTERNET(["INTERNET"]) -->|"WAN: static IPv4\ndouble-NAT + public IPv6 GUA"| FW
 
-  DNS resolution order, every VLAN:  client -> Pi-hole (.200, primary) -> OPNsense Unbound (gateway, fallback)
+    subgraph FW["OPNsense Firewall — Topton mini PC (N150 / 8GB / 256GB NVMe)"]
+        direction LR
+        SVC["Unbound (DNS) + Dnsmasq (DHCP)\n2x OpenVPN | GeoIP block | IDS/IPS"]
+    end
+
+    FW --> MGMT["MGMT 192.168.100.0/24\nnative/untagged"]
+    FW --> TRUSTED["TRUSTED 192.168.120.0/24\nday-to-day clients"]
+    FW --> SERVERS["SERVERS 192.168.130.0/24"]
+    FW --> GUEST["GUEST 192.168.150.0/24\nisolated, internet-only"]
+    FW --> IOT["IOT 192.168.140.0/24\ncasting devices\n(one-way pass from TRUSTED/GUEST)"]
+
+    MGMT --> SW["Switch + AP\nUSW-Lite-16-PoE + U7 Lite"]
+
+    subgraph PVE["Proxmox host — i5-10500T, 32GB, 2x500GB NVMe ZFS mirror"]
+        direction LR
+        CT200["CT 200\nPi-hole\n.200"]
+        CT201["CT 201\nUniFi OS Server\n(Podman)\n.201"]
+        CT202["CT 202\nMonitoring\nPrometheus+Grafana\n.202"]
+    end
+
+    SERVERS --> PVE
+
+    CT200 -.->|"DNS: primary"| TRUSTED
+    CT200 -.->|"DNS: primary"| GUEST
+    CT200 -.->|"DNS: primary"| IOT
+    FW -.->|"DNS: fallback\n(Unbound, per-VLAN gateway)"| TRUSTED
+
+    classDef vlan fill:#1565c0,stroke:#0d47a1,color:#fff
+    classDef fw fill:#2e7d32,stroke:#1b5e20,color:#fff
+    classDef guest fill:#616161,stroke:#212121,color:#fff
+    class MGMT,TRUSTED,SERVERS,GUEST,IOT vlan
+    class CT200,CT201,CT202 guest
 ```
+
+DNS resolution order, every VLAN: client → Pi-hole (`.200`, primary) → OPNsense Unbound (gateway, fallback).
 
 | Interface | Role | Address | Notes |
 |---|---|---|---|
