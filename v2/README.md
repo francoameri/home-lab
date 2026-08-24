@@ -2,8 +2,21 @@
 
 A dedicated bare-metal firewall replacing v1's virtualized-Sophos-on-Proxmox design, with real VLAN segmentation, dual-purpose VPN egress, a Proxmox host behind it running core services, and a self-hosted monitoring stack watching all of it. This document is a living record, updated as the build progresses — not a retrospective like v1.
 
+## Highlights
+
+- **Segmented a flat home network into 5 purpose-built VLANs** (management, trusted, servers, guest, IoT) on a dedicated bare-metal firewall, with alias-based rule consolidation instead of duplicated per-interface rules.
+- **Designed redundant DNS with automatic failover** — Pi-hole as the primary resolver for every VLAN, falling back to an independent second resolver if Pi-hole or its host goes down, so ad-blocking degrades gracefully instead of taking name resolution down with it.
+- **Built a self-hosted Prometheus + Grafana observability stack from zero**, in four deliberate phases, covering host metrics, two different container runtimes (Docker and Podman), three service-specific integrations, and uptime/TLS checks on every admin surface.
+- **Root-caused real production-style incidents**, not staged ones: a silent cross-VLAN DNS outage traced to a five-year-old floating firewall rule, a REST API that timed out in a way indistinguishable from a firewall block, and a kernel-level privilege boundary blocking a vendor's own installer.
+- **Practiced least-privilege and defense-in-depth as defaults**, not afterthoughts: dedicated read-only API service accounts per integration, config rollback anchors before every live change, and DNS-bypass prevention enforced at the firewall layer, not just documented as a goal.
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
+
+---
+
 📑 Table of Contents
 
+- [Highlights](#highlights)
 - [Status](#status)
 - [Overview](#overview)
 - [Goals](#goals)
@@ -21,7 +34,7 @@ A dedicated bare-metal firewall replacing v1's virtualized-Sophos-on-Proxmox des
 
 ## Status
 
-🚧 **Active, in progress.** Build started August 2026. Firewall, VLAN segmentation, switch, Proxmox host, DNS (Pi-hole + Unbound redundancy), and a Prometheus/Grafana monitoring stack are all live. NAS is planned, not yet deployed.
+🚧 **Active, in progress.** Build started August 2026. Firewall, VLAN segmentation, switch/AP, Proxmox host, DNS (Pi-hole + Unbound redundancy), and a Prometheus/Grafana monitoring stack are all live. NAS is planned, not yet deployed.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -46,13 +59,47 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 - **Observability as a first-class citizen, not an afterthought** — host, container, and service-level metrics plus uptime checks, self-hosted alongside everything they monitor.
 - **Operate like production, not like a hobby project** — config backups with rollback anchors before every change, verification against the live system rather than trusting exported config files, and a documented gotchas list so mistakes aren't repeated.
 
+> **Why it matters:** these aren't abstract principles borrowed from a textbook — each one maps directly to a real incident documented in [Known issues & lessons](#known-issues--lessons) below. "No single point of failure" exists because Pi-hole *was* one; "operate like production" exists because a config assumption, not verified live, cost real debugging time more than once.
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
 ## Network topology
 
-**Hardware:** Topton mini PC (Intel N150), 4× Intel i226-V NICs, running OPNsense.
+**Hardware:** Topton mini PC (Intel N150, 8GB RAM, 256GB NVMe SSD), 4× Intel i226-V NICs, running OPNsense.
+
+```
+                                        INTERNET
+                                            |
+                                (WAN: static IPv4 behind
+                                 double-NAT + public IPv6 GUA)
+                                            |
+                          +-------------------------------------+
+                          |        OPNsense Firewall              |
+                          |   Topton mini PC (N150 / 8GB / 256GB) |
+                          |----------------------------------------|
+                          | Unbound (DNS) + Dnsmasq (DHCP)         |
+                          | 2x OpenVPN | GeoIP block | IDS/IPS     |
+                          +-------------------------------------+
+                             |        |         |         |        |
+              +--------------+        |         |         +-----------------+
+              |                       |         |                           |
+        [MGMT 100/24]          [TRUSTED 120/24] [SERVERS 130/24]    [GUEST 150/24]
+        native/untagged         day-to-day       Proxmox host        isolated,
+              |                 clients               |              internet-only
+        Switch + AP                              (i5-10500T, 32GB,          |
+     USW-Lite-16-PoE                              2x500GB NVMe        [IOT 140/24]
+        + U7 Lite                                 ZFS mirror)         casting devices,
+                                                        |              one-way pass
+                                     +------------------+------------------+  from TRUSTED/GUEST
+                                     |                  |                  |
+                               CT200 Pi-hole     CT201 UniFi OS     CT202 Monitoring
+                               DNS + ad-block    Server (Podman)    Prometheus + Grafana
+                               192.168.130.200   192.168.130.201    192.168.130.202
+
+  DNS resolution order, every VLAN:  client -> Pi-hole (.200, primary) -> OPNsense Unbound (gateway, fallback)
+```
 
 | Interface | Role | Address | Notes |
 |---|---|---|---|
@@ -63,7 +110,9 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 | GUEST (VLAN 50) | Guest devices, isolated | 192.168.150.0/24, gateway `.254` | Explicit isolation rule blocks all RFC1918 destinations; internet-only. |
 | IOT (VLAN 40) | Wi-Fi casting devices | 192.168.140.0/24, gateway `.254` | Live — has its own full outbound ruleset (DNS/NTP/internet), not just inbound casting passes from TRUSTED/GUEST. |
 
-**Switch:** Ubiquiti UniFi Switch Lite 16 PoE (layer 2 only — all inter-VLAN routing happens on OPNsense, router-on-a-stick over a single trunk), adopted into a self-hosted UniFi OS Server running on Proxmox.
+> **Why it matters:** router-on-a-stick over a single trunk, with one dedicated firewall doing all inter-VLAN routing, is the same topology pattern used in small-to-mid enterprise branch networks before a company's traffic volume justifies dedicated core switching — it's a legitimate production pattern at this scale, not a simplification unique to home labs.
+
+**Switch:** Ubiquiti USW-Lite-16-PoE (layer 2 only — all inter-VLAN routing happens on OPNsense), adopted into a self-hosted UniFi OS Server running on Proxmox. **AP:** Ubiquiti U7 Lite, broadcasting the TRUSTED, GUEST, and IoT SSIDs. Full port-profile and SSID detail in [`unifi.md`](unifi.md).
 
 **DNS/DHCP:** Pi-hole (`192.168.130.200`) is the primary DNS resolver advertised to every VLAN via DHCP, for network-wide ad/tracker blocking; this firewall's own Unbound is the secondary/fallback resolver per VLAN, so a Pi-hole or Proxmox outage degrades to "no ad-blocking" rather than "no DNS." Dnsmasq handles DHCP and authoritative local DNS (`lab.lan`) on a non-standard port. Each VLAN interface needs its own DHCP range and its own entry in both Dnsmasq's and Unbound's listener lists — a VLAN with an IP but no DNS resolution is the most common way a segmented network looks "broken" when it's actually just a missed checkbox. Full design in [`opnsense.md`](opnsense.md#dns-and-dhcp--a-split-design) and [`pihole.md`](pihole.md).
 
@@ -80,9 +129,10 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 ## Hardware and software inventory
 
 **Deployed:**
-- Topton mini PC (Intel N150, 4× i226-V) — OPNsense 26.7.1, FreeBSD 15.1, ZFS root.
-- Ubiquiti Switch Lite 16 PoE (8 of 16 ports PoE+) — layer 2, adopted by the self-hosted UniFi OS Server.
-- HP EliteDesk Mini 600 G6 (i5-10500T) — Proxmox VE host, ZFS root, on the SERVERS VLAN. Hosts three LXC guests: UniFi OS Server (`CT 201`), Pi-hole (`CT 200`), and the monitoring stack (`CT 202`). See [`proxmox.md`](proxmox.md#guests).
+- Topton mini PC — Intel N150, 8GB RAM, 256GB NVMe SSD, 4× i226-V NICs — OPNsense 26.7.1, FreeBSD 15.1, ZFS root.
+- Ubiquiti USW-Lite-16-PoE (8 of 16 ports PoE+) — layer 2 switch, adopted by the self-hosted UniFi OS Server.
+- Ubiquiti U7 Lite — access point, broadcasting TRUSTED, GUEST, and IoT SSIDs.
+- HP EliteDesk Mini 600 G6 — Intel i5-10500T, 32GB RAM, 2× 500GB NVMe SSD in a ZFS mirror (RAID1) — Proxmox VE host, on the SERVERS VLAN. Hosts three LXC guests: UniFi OS Server (`CT 201`), Pi-hole (`CT 200`), and the monitoring stack (`CT 202`). See [`proxmox.md`](proxmox.md#guests).
 - Pi-hole (`CT 200`) — network-wide DNS resolution and ad-blocking for every VLAN. See [`pihole.md`](pihole.md).
 - Prometheus + Grafana monitoring stack (`CT 202`) — host, container, and service-level metrics plus uptime checks. See [`monitoring.md`](monitoring.md).
 
@@ -106,6 +156,8 @@ Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 invert
 - **Least-privilege service accounts for integrations.** The monitoring stack's OPNsense exporter authenticates as a dedicated `monitoring-api` user scoped only to the read-only privileges it actually needs (no password login, no group membership); Pi-hole's exporter authenticates with an App Password generated after disabling destructive API actions. See [`opnsense.md`](opnsense.md#monitoring-api-access) and [`pihole.md`](pihole.md#monitoring-integration).
 - **Standing operational discipline:** every live change gets a ZFS-boot-environment rollback anchor (`bectl create`) and a config backup *before* the change, and claims about firewall/DNS/service behavior are verified against the running system (`pfctl`, `sockstat`, `drill`) rather than trusted from an exported config file.
 
+> **Why it matters:** rollback anchors before every change, least-privilege service accounts per integration, and verifying against the live system instead of an exported config file are all standard change-management discipline in regulated or on-call environments — applied here at home-lab scale specifically to build the habit, not just to check a box.
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
@@ -123,7 +175,7 @@ Real gotchas discovered while building this, not sanitized after the fact:
 - **A client machine's own DHCP lease doesn't self-heal** when the gateway address changes underneath it — the client keeps routing through the old (now-nonexistent) gateway/DNS server until its lease renews. Same-subnet SSH access to the new address still works immediately regardless (ARP, not routing), but broader connectivity needs a manual release/renew.
 - **"Other Types" doesn't exist in this OPNsense version's menu** the way older documentation describes — VLAN interface creation lives under **Interfaces → Devices → VLAN**, not a dedicated top-level menu item.
 - **UniFi switches have no standalone local management** — factory/unadopted state is a plain unmanaged L2 switch (everything on the native VLAN); VLAN-aware port profiles require a UniFi controller to exist and adopt the device first. This is architecture, not a missing feature.
-- **PoE port layout isn't odd/even** on the UniFi Switch Lite 16 PoE — it's a straight split, ports 1–8 PoE+, 9–16 non-PoE. Moot in practice, since PoE only activates on negotiation — any port is safe to use for a non-PoE uplink.
+- **PoE port layout isn't odd/even** on the USW-Lite-16-PoE — it's a straight split, ports 1–8 PoE+, 9–16 non-PoE. Moot in practice, since PoE only activates on negotiation — any port is safe to use for a non-PoE uplink.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -135,13 +187,15 @@ Real gotchas discovered while building this, not sanitized after the fact:
 - Local Proxmox Backup Server datastore, once a drive bay frees up.
 - Suricata IPS scope decision — currently `lan,opt1,wan` only; once inter-VLAN routing carries real traffic, all of it will hairpin through Suricata on modest hardware, so WAN-only vs. all-interfaces is an open tradeoff to make deliberately, not by default.
 - OpenVPN tls-crypt key rotation — flagged as compromised after appearing unredacted in an exported config during a review pass; deferred since the VPN isn't currently in active use, revisit before either instance goes back into use.
-- Tier-3 (off-Hetzner-equivalent / off-site) backup — no off-box backup target exists yet beyond the planned local PBS datastore and eventual NAS; acknowledged gap, not yet scheduled.
+- Tier-3 (off-site) backup — no off-box backup target exists yet beyond the planned local PBS datastore and eventual NAS; acknowledged gap, not yet scheduled.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
 ## Related documentation
+
+Each doc below is self-contained and links back here and to its neighbors directly — there's no numbered `§N` citation scheme, just plain markdown links pointing at the exact heading being referenced.
 
 - [`opnsense.md`](opnsense.md) — firewall build in full: interfaces, VLANs, DNS/DHCP, firewall rules, monitoring API access.
 - [`unifi.md`](unifi.md) — switch/AP adoption, port profiles, and the self-hosted controller migration.
@@ -156,7 +210,7 @@ Real gotchas discovered while building this, not sanitized after the fact:
 
 ## Keywords
 
-OPNsense · VLAN segmentation · pfctl · UniFi · Proxmox · ZFS · Pi-hole · Prometheus · Grafana · cAdvisor · homelab · network security · GeoIP · CrowdSec · Suricata · OpenVPN · firewall · self-hosted · infrastructure engineering · observability
+OPNsense · VLAN segmentation · pfctl · UniFi · Proxmox · ZFS · Pi-hole · Prometheus · Grafana · cAdvisor · homelab · network security · GeoIP · CrowdSec · Suricata · OpenVPN · firewall · self-hosted · infrastructure engineering · observability · least privilege · defense in depth
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
