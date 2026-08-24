@@ -1,19 +1,30 @@
 # 📡 UniFi — Switch, AP, and the Self-Hosted Controller Migration
 
-Adoption, port profiles, SSIDs, and the full story of moving from a self-hosted UniFi Network Application to Ubiquiti's newer self-hosted UniFi OS Server — including the kernel-level troubleshooting it took to get there. Cross-references to the main [`README.md`](README.md) use `§N` notation for its numbered sections.
+Adoption, port profiles, SSIDs, and the full story of moving from a self-hosted UniFi Network Application to Ubiquiti's newer self-hosted UniFi OS Server — including the kernel-level troubleshooting it took to get there. Links to other v2 docs point directly at the relevant heading — there's no numbered `§N` citation scheme, just plain markdown links.
 
 ---
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Switch and AP adoption](#switch-and-ap-adoption)
-3. [Port profiles](#port-profiles)
-4. [SSIDs](#ssids)
-5. [The controller migration](#the-controller-migration)
-6. [IP renumbering](#ip-renumbering)
-7. [mDNS/SSDP reflection for cross-VLAN casting](#mdnsssdp-reflection-for-cross-vlan-casting)
-8. [Known issues & lessons](#known-issues--lessons)
+1. [Hardware](#hardware)
+2. [Overview](#overview)
+3. [Switch and AP adoption](#switch-and-ap-adoption)
+4. [Port profiles](#port-profiles)
+5. [SSIDs](#ssids)
+6. [The controller migration](#the-controller-migration)
+7. [IP renumbering](#ip-renumbering)
+8. [mDNS/SSDP reflection for cross-VLAN casting](#mdnsssdp-reflection-for-cross-vlan-casting)
+9. [Known issues & lessons](#known-issues--lessons)
+
+---
+
+## Hardware
+
+- **Switch:** Ubiquiti USW-Lite-16-PoE — 16-port layer 2 switch, 8 of 16 ports PoE+.
+- **Access point:** Ubiquiti U7 Lite — Wi-Fi 7, broadcasting the TRUSTED, GUEST, and IoT SSIDs.
+- **Controller:** self-hosted UniFi OS Server, running as `CT 201` on Proxmox (see [`proxmox.md`](proxmox.md#guests)) — no cloud gateway, no cloud key, no Ubiquiti account dependency for local management.
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
@@ -21,13 +32,35 @@ Adoption, port profiles, SSIDs, and the full story of moving from a self-hosted 
 
 The switch and AP are both Ubiquiti UniFi gear, which means neither one has any useful standalone local management — out of the box, a UniFi switch is a plain unmanaged L2 device with everything on the native VLAN, and VLAN-aware port profiles only exist once a UniFi controller adopts it. That controller needed to be self-hosted (no cloud gateway/key in this build), which is what makes this component more involved than "plug in switch, configure ports."
 
+```mermaid
+flowchart LR
+    OPN["OPNsense\nrouter-on-a-stick"] -->|Uplink-Trunk\nAllow All| SW["Ubiquiti USW-Lite-16-PoE"]
+    SW -->|AP-Trunk\nTRUSTED/GUEST/IOT| AP["Ubiquiti U7 Lite"]
+    SW -->|Proxmox-Trunk\nSERVERS only| PVE["Proxmox host"]
+    SW -->|Trusted-Access\nnative TRUSTED| CLIENTS["Wired clients"]
+    PVE -.->|controls| CT201["CT 201\nUniFi OS Server\n(controller)"]
+    CT201 -.->|adopts + configures| SW
+    CT201 -.->|adopts + configures| AP
+
+    classDef infra fill:#2e7d32,stroke:#1b5e20,color:#fff
+    classDef ctrl fill:#1565c0,stroke:#0d47a1,color:#fff
+    class SW,AP,PVE infra
+    class CT201 ctrl
+```
+
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
 ## Switch and AP adoption
 
-Both devices were adopted via `set-inform` pointed at the self-hosted controller's inform endpoint (`http://<controller-ip>:8080/inform`), run directly over SSH on each device rather than relying purely on L2 discovery — more reliable when the controller sits behind Docker's network stack rather than bound directly to a host interface. The controller's **Inform Host Override** setting (Settings → System → search "inform") had to be set explicitly to the controller's real reachable IP; without it, devices see the controller's internal container IP instead and adoption never sticks.
+Both devices were adopted via `set-inform` pointed at the self-hosted controller's inform endpoint, run directly over SSH on each device rather than relying purely on L2 discovery — more reliable when the controller sits behind Docker's network stack rather than bound directly to a host interface:
+
+```
+set-inform http://<controller-ip>:8080/inform
+```
+
+The controller's **Inform Host Override** setting (Settings → System → search "inform") had to be set explicitly to the controller's real reachable IP; without it, devices see the controller's internal container IP instead and adoption never sticks.
 
 Both devices needed to be re-pointed with a fresh `set-inform` every time the controller's IP changed — which happened three times over the course of this build (initial deployment, migration to UniFi OS Server, and the later SERVERS VLAN renumbering, see [`proxmox.md`](proxmox.md)). Each time, both devices reconnected automatically without needing to go through the full adopt-from-pending flow again, since they were already associated with that controller's identity — only the endpoint address needed updating.
 
@@ -46,6 +79,8 @@ Both devices needed to be re-pointed with a fresh `set-inform` every time the co
 
 `Uplink-Trunk` is deliberately `Allow All` rather than a custom tagged list — it's the port facing OPNsense itself, which needs to see every VLAN regardless of what gets added later, so there's nothing to maintain here as new VLANs appear. Every other trunk profile is `Custom`, carrying only the specific VLANs that device actually needs — `Proxmox-Trunk` doesn't carry IOT, TRUSTED, or GUEST, since nothing on the Proxmox host consumes any of those.
 
+> **Why it matters:** scoping each trunk to only the VLANs it actually needs (instead of defaulting every port to "Allow All") is basic network segmentation hygiene — it limits how far a compromised device on any one segment can reach, even at the physical switch-port level.
+
 `Trusted-Access` is an Edge port profile (not Infrastructure) with tagged VLAN management set to Block All — appropriate for ports facing end-user client devices rather than other network infrastructure, and it native-VLANs those ports directly onto TRUSTED.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
@@ -54,7 +89,7 @@ Both devices needed to be re-pointed with a fresh `set-inform` every time the co
 
 ## SSIDs
 
-Three SSIDs, one per client-facing VLAN:
+Three SSIDs, one per client-facing VLAN, all broadcast from the U7 Lite:
 
 - **Primary trusted network** → TRUSTED (VLAN 20).
 - **Guest network** → GUEST (VLAN 50), with guest isolation enabled at the SSID level in addition to the firewall-level isolation on the VLAN itself — belt and suspenders.
@@ -70,7 +105,11 @@ The self-hosted UniFi controller went through two full generations in this build
 
 **Generation 1 — UniFi Network Application, by hand.** A `docker compose` stack: the `linuxserver/unifi-network-application` image alongside a separate `mongo:7.0` container, initially wired with Docker's default bridge networking and published ports. This worked for basic adoption, but the adopted switch intermittently dropped to "Offline" — unmanageable, no Port Manager, no live stats, no way to push config — for a few seconds at a time, with no obvious cause in the switch's own logs or via basic connectivity tests (conntrack table wasn't near its limit; direct pings between switch and host were clean). The actual cause was Docker's bridge network's NAT/userland-proxy path being unreliable specifically for the device *inform* channel — switching both containers to `network_mode: host` resolved it immediately and completely.
 
-That fix had its own follow-on: switching networking modes on an *already-deployed* controller left `system.properties` still pointing at the old Docker-internal Mongo hostname (`unifi-mongo`), which isn't re-read from environment variables after first-run initialization — it's a persisted config file. The controller crash-looped with `MongoTimeoutException` until that file (and its `.bk` backup) got a manual `sed` to point at `127.0.0.1` instead.
+That fix had its own follow-on: switching networking modes on an *already-deployed* controller left `system.properties` still pointing at the old Docker-internal Mongo hostname (`unifi-mongo`), which isn't re-read from environment variables after first-run initialization — it's a persisted config file. The controller crash-looped with `MongoTimeoutException` until that file (and its `.bk` backup) got a manual fix:
+
+```
+sed -i 's/unifi-mongo/127.0.0.1/' system.properties system.properties.bk
+```
 
 **Generation 2 — migrating to UniFi OS Server.** Ubiquiti's classic self-hosted Network Application is being sunset in favor of a newer, officially self-hosted **UniFi OS Server** product — Ubiquiti documents an official migration path (backup export from the classic app → install UniFi OS Server → restore), so this build followed it rather than staying on a product with a known end date. The new server was deployed into a fresh LXC (`CT 201`, kept separate from the Docker-based `CT 200` deliberately, to avoid mixing container runtimes), and this is where the real troubleshooting started.
 
@@ -85,6 +124,8 @@ The first real blocker: the installer's own `sysctl -p` step failed setting `net
 The fix was converting the container to **privileged** — trading some isolation (a privileged LXC's root is effectively host root) for compatibility with what the installer needs. That surfaced a second, unrelated problem: flipping an *existing* unprivileged container to privileged doesn't retroactively fix on-disk file ownership. Every file that container's "root" had ever written was actually stored on disk under the real UID/GID *offset* by the unprivileged subuid mapping (100000+) — and privileged containers use real host UIDs directly, with no such mapping. The result: `/usr/bin/su` and other setuid binaries now appeared owned by UID 100000 instead of 0, silently breaking their setuid semantics (`su: cannot set groups: Operation not permitted` — the exact, misleadingly generic error the installer surfaced). The fix here wasn't another config tweak; it was destroying the container and recreating it privileged *from creation*, so every file gets written with the correct ownership from the start.
 
 Two smaller things came up on the freshly-rebuilt privileged container: default AppArmor confinement (ruled out once `dmesg` showed no matching denial for the failing operation), and Podman's rootless-style `pasta` network backend needing `/dev/net/tun`, which isn't exposed inside an LXC by default — fixed with an explicit `lxc.cgroup2.devices.allow` entry plus a bind-mount `lxc.mount.entry` for the device node.
+
+> **Why it matters:** this is a genuine kernel-level privilege boundary, not a config mistake — the same class of problem platform teams hit running unprivileged containers on Kubernetes when a workload needs a capability the container runtime doesn't grant by default. Recognizing "this needs a fundamentally different container posture" instead of continuing to chase a workaround is the actual skill here.
 
 With all of that resolved, the install completed cleanly, and the actual data migration — export a backup from the classic UniFi Network Application, restore it into the new UniFi OS Server's setup wizard — carried over the full site configuration (networks, port profiles, SSIDs, adopted devices) without any manual re-entry. Both devices needed one more `set-inform` pointed at the new server's IP, and came back online immediately.
 
