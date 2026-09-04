@@ -34,7 +34,7 @@ A dedicated bare-metal firewall replacing v1's virtualized-Sophos-on-Proxmox des
 
 ## Status
 
-🚧 **Active, in progress.** Build started August 2026. Firewall, VLAN segmentation, switch/AP, Proxmox host, DNS (Pi-hole + Unbound redundancy), and a Prometheus/Grafana monitoring stack are all live. NAS is planned, not yet deployed.
+🚧 **Active, in progress.** Build started August 2026. Firewall, VLAN segmentation, switch/AP, Proxmox host, DNS (Pi-hole + Unbound redundancy), a Prometheus/Grafana monitoring stack, and local Tier-1 backup (Proxmox Backup Server) are all live. NAS (Tier-2 off-box backup) is planned, not yet deployed.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -42,7 +42,7 @@ A dedicated bare-metal firewall replacing v1's virtualized-Sophos-on-Proxmox des
 
 ## Overview
 
-Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 inverts that: a dedicated bare-metal appliance (OPNsense) sits at the edge, with virtualization (Proxmox) living *behind* it as just another segment on the network, not the thing hosting the firewall itself. Proxmox now hosts every core service in the lab — UniFi's self-hosted controller, Pi-hole for network-wide DNS, and a Prometheus/Grafana stack watching all of it — each in its own container, on its own address, rather than one box doing everything.
+Where v1 ran its firewall as a VM inside a general-purpose hypervisor, v2 inverts that: a dedicated bare-metal appliance (OPNsense) sits at the edge, with virtualization (Proxmox) living *behind* it as just another segment on the network, not the thing hosting the firewall itself. Proxmox now hosts every core service in the lab — UniFi's self-hosted controller, Pi-hole for network-wide DNS, a Prometheus/Grafana stack watching all of it, and its own Backup Server protecting all of it — each in its own guest, on its own address, rather than one box doing everything.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -86,8 +86,9 @@ flowchart TB
 
     MGMT --> SW["Switch + AP\nUSW-Lite-16-PoE + U7 Lite"]
 
-    subgraph PVE["Proxmox host — i5-10500T, 32GB, 2x500GB NVMe ZFS mirror"]
+    subgraph PVE["Proxmox host — i5-10500T, 32GB, 2x500GB NVMe ZFS mirror + 1TB HDD"]
         direction LR
+        VM100["VM 100\nPBS (backup)\n.252"]
         CT200["CT 200\nPi-hole\n.200"]
         CT201["CT 201\nUniFi OS Server\n(Podman)\n.201"]
         CT202["CT 202\nMonitoring\nPrometheus+Grafana\n.202"]
@@ -104,7 +105,7 @@ flowchart TB
     classDef fw fill:#2e7d32,stroke:#1b5e20,color:#fff
     classDef guest fill:#616161,stroke:#212121,color:#fff
     class MGMT,TRUSTED,SERVERS,GUEST,IOT vlan
-    class CT200,CT201,CT202 guest
+    class VM100,CT200,CT201,CT202 guest
 ```
 
 DNS resolution order, every VLAN: client → Pi-hole (`.200`, primary) → OPNsense Unbound (gateway, fallback).
@@ -114,7 +115,7 @@ DNS resolution order, every VLAN: client → Pi-hole (`.200`, primary) → OPNse
 | WAN | Internet | Static IPv4 behind double-NAT (ISP router) + public IPv6 GUA via DHCPv6 | The double-NAT doesn't shield IPv6 — WAN has a real routable IPv6 address. |
 | MGMT (native/untagged) | Management | 192.168.100.0/24, gateway `.254` | Stays untagged on the trunk deliberately — the one segment that's never touched during VLAN work, so a mistake elsewhere can't strand admin access. |
 | TRUSTED (VLAN 20) | Day-to-day devices, internal Wi-Fi | 192.168.120.0/24, gateway `.254` | Full bidirectional access to SERVERS by design — see [`opnsense.md`](opnsense.md#firewall-rule-architecture). |
-| SERVERS (VLAN 30) | Proxmox host and VMs | 192.168.130.0/24, gateway `.254` | Live — hosts Pi-hole (`.200`), UniFi OS Server (`.201`), and the monitoring stack (`.202`). |
+| SERVERS (VLAN 30) | Proxmox host and VMs | 192.168.130.0/24, gateway `.254` | Live — hosts Pi-hole (`.200`), UniFi OS Server (`.201`), the monitoring stack (`.202`), and Proxmox Backup Server (`.252`). |
 | GUEST (VLAN 50) | Guest devices, isolated | 192.168.150.0/24, gateway `.254` | Explicit isolation rule blocks all RFC1918 destinations; internet-only. |
 | IOT (VLAN 40) | Wi-Fi casting devices | 192.168.140.0/24, gateway `.254` | Live — has its own full outbound ruleset (DNS/NTP/internet), not just inbound casting passes from TRUSTED/GUEST. |
 
@@ -140,13 +141,14 @@ DNS resolution order, every VLAN: client → Pi-hole (`.200`, primary) → OPNse
 - Topton mini PC — Intel N150, 8GB RAM, 256GB NVMe SSD, 4× i226-V NICs — OPNsense 26.7.1, FreeBSD 15.1, ZFS root.
 - Ubiquiti USW-Lite-16-PoE (8 of 16 ports PoE+) — layer 2 switch, adopted by the self-hosted UniFi OS Server.
 - Ubiquiti U7 Lite — access point, broadcasting TRUSTED, GUEST, and IoT SSIDs.
-- HP EliteDesk Mini 600 G6 — Intel i5-10500T, 32GB RAM, 2× 500GB NVMe SSD in a ZFS mirror (RAID1) — Proxmox VE host, on the SERVERS VLAN. Hosts three LXC guests: UniFi OS Server (`CT 201`), Pi-hole (`CT 200`), and the monitoring stack (`CT 202`). See [`proxmox.md`](proxmox.md#guests).
+- HP EliteDesk Mini 600 G6 — Intel i5-10500T, 32GB RAM, 2× 500GB NVMe SSD in a ZFS mirror (RAID1) — Proxmox VE host, on the SERVERS VLAN. Hosts one VM and three LXC guests: Proxmox Backup Server (`VM 100`), UniFi OS Server (`CT 201`), Pi-hole (`CT 200`), and the monitoring stack (`CT 202`). See [`proxmox.md`](proxmox.md#guests).
+- 1TB 2.5" HDD (in a caddy), added to the Proxmox host as a single-disk ZFS pool (`hdd-pool`), dedicated to the Proxmox Backup Server datastore. See [`proxmox.md`](proxmox.md#backup-infrastructure-proxmox-backup-server).
+- Proxmox Backup Server (`VM 100`) — local Tier-1 backup for every LXC guest, daily backups with 7-daily/4-weekly/6-monthly retention. See [`proxmox.md`](proxmox.md#backup-infrastructure-proxmox-backup-server).
 - Pi-hole (`CT 200`) — network-wide DNS resolution and ad-blocking for every VLAN. See [`pihole.md`](pihole.md).
 - Prometheus + Grafana monitoring stack (`CT 202`) — host, container, and service-level metrics plus uptime checks. See [`monitoring.md`](monitoring.md).
 
 **Planned:**
-- 2–4 bay NAS, RAID10, starting with 4× 1TB HDDs.
-- Local Proxmox Backup Server datastore (Tier-1, fast local restore) once a NAS-freed drive bay is available; the NAS becomes Tier-2 (off-box) backup afterward.
+- 2–4 bay NAS, RAID10, starting with 4× 1TB HDDs — becomes Tier-2 (off-box) backup once built, complementing the now-live Tier-1 local PBS datastore.
 
 **Software services (planned):** media server (Jellyfin or similar, storage on NAS via NFS, app on Proxmox) — deliberately left open rather than over-planned.
 
@@ -161,7 +163,8 @@ DNS resolution order, every VLAN: client → Pi-hole (`.200`, primary) → OPNse
 - **DNS redundancy by design.** Every VLAN's DHCP option 6 advertises Pi-hole first and that VLAN's own OPNsense gateway (Unbound) second, so DNS survives a Pi-hole/Proxmox outage even though ad-blocking doesn't.
 - **GeoIP blocking** of a defined hostile-country list, verified live to sit ahead of both OpenVPN port passes in the actual pf ruleset — not just assumed from the GUI.
 - **Responsible VPN egress hardening (Instance 2 / friends' VPN):** DNS forced through CleanBrowsing's *Security Filter* (malware/phishing/CSAM blocking only — deliberately not a lifestyle/content filter, since general adult content and torrenting are explicitly permitted) plus a firewall block against an auto-updating alias of official Tor Project exit-node IPs (`https://check.torproject.org/torbulkexitlist`, refreshed daily). The goal is narrowly scoped: block the one category that creates real legal exposure for the account holder, without restricting anything else.
-- **Least-privilege service accounts for integrations.** The monitoring stack's OPNsense exporter authenticates as a dedicated `monitoring-api` user scoped only to the read-only privileges it actually needs (no password login, no group membership); Pi-hole's exporter authenticates with an App Password generated after disabling destructive API actions. See [`opnsense.md`](opnsense.md#monitoring-api-access) and [`pihole.md`](pihole.md#monitoring-integration).
+- **Least-privilege service accounts for integrations.** The monitoring stack's OPNsense exporter authenticates as a dedicated `monitoring-api` user scoped only to the read-only privileges it actually needs (no password login, no group membership); Pi-hole's exporter authenticates with an App Password generated after disabling destructive API actions; Proxmox's connection to its own Backup Server uses a dedicated `pve-backup@pbs` user scoped only to `DatastoreBackup` on its one datastore. See [`opnsense.md`](opnsense.md#monitoring-api-access), [`pihole.md`](pihole.md#monitoring-integration), and [`proxmox.md`](proxmox.md#backup-infrastructure-proxmox-backup-server).
+- **Local backup with a deliberate failure-domain split.** Proxmox Backup Server's own OS disk lives on the redundant NVMe mirror; its actual backup datastore lives on a separate single-disk HDD — so a disk failure on either side doesn't take out both the backup target and what it's protecting at once. Daily backups, pruned to a 7-daily/4-weekly/6-monthly policy, garbage-collected weekly. See [`proxmox.md`](proxmox.md#backup-infrastructure-proxmox-backup-server).
 - **Standing operational discipline:** every live change gets a ZFS-boot-environment rollback anchor (`bectl create`) and a config backup *before* the change, and claims about firewall/DNS/service behavior are verified against the running system (`pfctl`, `sockstat`, `drill`) rather than trusted from an exported config file.
 
 > **Why it matters:** rollback anchors before every change, least-privilege service accounts per integration, and verifying against the live system instead of an exported config file are all standard change-management discipline in regulated or on-call environments — applied here at home-lab scale specifically to build the habit, not just to check a box.
@@ -178,6 +181,7 @@ Real gotchas discovered while building this, not sanitized after the fact:
 - **A pre-existing floating Block rule can silently break a brand-new service built long after the rule was written.** A floating "block DNS bypass" rule written before Pi-hole existed silently blocked every cross-VLAN query to it once deployed — same-subnet tests looked fine (they never traverse OPNsense's routing layer) while genuinely cross-VLAN tests failed identically-configured traffic. Full trail in [`pihole.md`](pihole.md#the-dns-bypass-floating-rule-bug).
 - **A VLAN interface with no rules of its own has no outbound access, even if other VLANs have inbound passes pointed at it.** IOT initially had only the casting-related Pass rules that TRUSTED/GUEST pointed *at* it — no ruleset of its own meant no DNS, no NTP, no internet for IOT devices. Detail in [`opnsense.md`](opnsense.md#iots-own-ruleset).
 - **"Invert Destination," left checked from a cloned rule, produces the exact opposite of the intended behavior.** Watch for a `!` prefixing the destination in the rules list.
+- **`qm create` can hang or time out indefinitely when a command mixes a storage-managed disk (needs fresh allocation) with a raw device-path disk (already exists) in the same invocation.** Cost real debugging time provisioning the Proxmox Backup Server VM. Isolated to `qm create`'s own orchestration — the ZFS layer, udev, and the storage plugin all tested healthy independently. Workaround and full trail in [`proxmox.md`](proxmox.md#known-issues--lessons).
 - **OPNsense's Listen Interfaces setting scopes more than the web GUI.** An interface left out of System → Settings → Administration → Listen Interfaces produces a full connection timeout for anything hitting the API/GUI on that interface — indistinguishable from "nothing is listening," not a firewall rejection. Cost real debugging time on the OPNsense monitoring exporter; detail in [`monitoring.md`](monitoring.md#phase-3--service-specific-exporters).
 - **dnsmasq and Unbound both self-follow interface IP changes** — moving an interface's address doesn't require manually updating each service's listen-address list, since both bind by interface, not a hardcoded address. What *does* need a manual nudge: an already-running service instance holding a stale socket on the old address until it's restarted/reloaded — `sockstat` will show the ghost binding until then.
 - **A client machine's own DHCP lease doesn't self-heal** when the gateway address changes underneath it — the client keeps routing through the old (now-nonexistent) gateway/DNS server until its lease renews. Same-subnet SSH access to the new address still works immediately regardless (ARP, not routing), but broader connectivity needs a manual release/renew.
@@ -191,8 +195,7 @@ Real gotchas discovered while building this, not sanitized after the fact:
 
 ## Planned / not yet built
 
-- NAS (2–4 bay, RAID10, ~2 months out at last check).
-- Local Proxmox Backup Server datastore, once a drive bay frees up.
+- NAS (2–4 bay, RAID10, ~2 months out at last check) — becomes Tier-2 off-box backup once built, alongside the now-live local Tier-1 PBS datastore.
 - Suricata IPS scope decision — currently `lan,opt1,wan` only; once inter-VLAN routing carries real traffic, all of it will hairpin through Suricata on modest hardware, so WAN-only vs. all-interfaces is an open tradeoff to make deliberately, not by default.
 - OpenVPN tls-crypt key rotation — flagged as compromised after appearing unredacted in an exported config during a review pass; deferred since the VPN isn't currently in active use, revisit before either instance goes back into use.
 - Tier-3 (off-site) backup — no off-box backup target exists yet beyond the planned local PBS datastore and eventual NAS; acknowledged gap, not yet scheduled.
@@ -218,7 +221,7 @@ Each doc below is self-contained and links back here and to its neighbors direct
 
 ## Keywords
 
-OPNsense · VLAN segmentation · pfctl · UniFi · Proxmox · ZFS · Pi-hole · Prometheus · Grafana · cAdvisor · homelab · network security · GeoIP · CrowdSec · Suricata · OpenVPN · firewall · self-hosted · infrastructure engineering · observability · least privilege · defense in depth
+OPNsense · VLAN segmentation · pfctl · UniFi · Proxmox · Proxmox Backup Server · ZFS · Pi-hole · Prometheus · Grafana · cAdvisor · homelab · network security · GeoIP · CrowdSec · Suricata · OpenVPN · firewall · self-hosted · infrastructure engineering · observability · least privilege · defense in depth · backup and disaster recovery
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
