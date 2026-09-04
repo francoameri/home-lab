@@ -1,4 +1,4 @@
-###🔧 Home-Lab v2 — Segmented OPNsense Build
+### 🔧 Home-Lab v2 — Segmented OPNsense Build
 
 A dedicated bare-metal firewall replacing v1's virtualized-Sophos-on-Proxmox design, with real VLAN segmentation, dual-purpose VPN egress, a Proxmox host behind it running core services, and a self-hosted monitoring stack watching all of it. This document is a living record, updated as the build progresses — not a retrospective like v1.
 
