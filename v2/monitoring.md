@@ -1,198 +1,275 @@
-# 🖥️ Proxmox — Hypervisor, Storage, and VLAN-Aware Networking
+# 📊 Monitoring — Prometheus, Grafana, and Exporters
 
-Hardware, storage strategy, the networking design that lets one bridge serve both host-level and guest-level VLAN membership, and the reasoning behind where Proxmox itself sits in the network. Links to other v2 docs point directly at the relevant heading — there's no numbered `§N` citation scheme, just plain markdown links.
+A self-contained observability stack for the whole lab: host resources, container metrics, service-specific metrics (Pi-hole, OPNsense, Proxmox Backup Server), and uptime/availability checks — built in five deliberate phases. Links to [`opnsense.md`](opnsense.md), [`pihole.md`](pihole.md), [`proxmox.md`](proxmox.md), and [`unifi.md`](unifi.md) point directly at the relevant heading — there's no numbered `§N` citation scheme.
 
 ---
 
 ## Table of Contents
 
-1. [Hardware](#hardware)
-2. [Storage](#storage)
-3. [VM/CT numbering convention](#vmct-numbering-convention)
-4. [Networking: one bridge, two VLAN mechanisms](#networking-one-bridge-two-vlan-mechanisms)
-5. [Where Proxmox lives on the network — and why](#where-proxmox-lives-on-the-network--and-why)
-6. [Guests](#guests)
-7. [Backup infrastructure (Proxmox Backup Server)](#backup-infrastructure-proxmox-backup-server)
-8. [Known issues & lessons](#known-issues--lessons)
+1. [Overview](#overview)
+2. [Deployment](#deployment)
+3. [Architecture](#architecture)
+4. [Phase 1 — core stack and host metrics](#phase-1--core-stack-and-host-metrics)
+5. [Phase 2 — container metrics](#phase-2--container-metrics)
+6. [Phase 3 — service-specific exporters](#phase-3--service-specific-exporters)
+7. [Phase 4 — uptime and availability checks](#phase-4--uptime-and-availability-checks)
+8. [Phase 5 — Proxmox Backup Server exporter](#phase-5--proxmox-backup-server-exporter)
+9. [Targets reference](#targets-reference)
+10. [Known issues & lessons](#known-issues--lessons)
 
 ---
 
-## Hardware
+## Overview
 
-HP EliteDesk Mini 600 G6 — Intel i5-10500T (6C/12T), 32GB RAM, 2× 500GB NVMe SSD in a ZFS mirror (RAID1). ZFS root.
-
-> **Why it matters:** mirroring the two NVMes means a single drive failure doesn't take the hypervisor down — every guest's rootfs survives on the remaining disk while the failed one is replaced, the same resilience tradeoff a production hypervisor host makes at any scale.
-
-<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
-
----
-
-## Storage
-
-`local-zfs` — ZFS-backed, inherently thin-provisioned by default, unlike VM zvols which need it configured explicitly. All container rootfs volumes live here, striped across the mirrored NVMe pair described above.
-
-`hdd-pool` — a second, single-disk ZFS pool on a 1TB 2.5" HDD (WD10JPLX, in a caddy) added specifically to host the Proxmox Backup Server datastore (see [Backup infrastructure](#backup-infrastructure-proxmox-backup-server) below), registered as its own Proxmox storage (`zfspool`, mountpoint `/hdd-pool`). Deliberately **not** mirrored — a single physical drive, accepted as a known point of failure for this Tier-1 local/fast-restore backup target, with an eventual NAS becoming Tier-2 off-box backup. The pool spans the whole disk; a fixed-size zvol is carved out for the PBS VM's datastore disk, and the remaining pool space stays available as ordinary ZFS datasets for anything else — datasets draw dynamically from shared pool space (no fixed partitioning), zvols need an explicit resize.
-
-<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
-
----
-
-## VM/CT numbering convention
-
-VMIDs are split by guest type rather than one flat sequence: **VMs get the 100s, LXC containers get the 200s.** `CT 200`/`201`/`202` (see [Guests](#guests)) predate this convention and were already in the 200s when it was formalized; `VM 100` (Proxmox Backup Server) is the first guest actually assigned under it. The container-to-IP convention (last-two-IP-digits match VMID) still applies within each range — `VM 100` → `.100` by default, though a specific guest can deviate for a good reason (see PBS's actual address in [Backup infrastructure](#backup-infrastructure-proxmox-backup-server)).
-
-<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
-
----
-
-## Networking: one bridge, two VLAN mechanisms
-
-`vmbr0` runs with `bridge-vlan-aware yes` and an explicit `bridge-vids` range, which unlocks two different ways of putting something onto a specific VLAN through the same physical trunk port:
-
-- **Per-guest tagging.** An LXC container's own `net0` line can specify `tag=N` directly (e.g., `tag=30` for SERVERS) — the vlan-aware bridge handles tagging/untagging traffic to and from that specific guest's virtual NIC, with no separate interface needed per VLAN per guest.
-- **A dedicated host-level VLAN sub-interface.** For the Proxmox *host's own* management IP, a classic 802.1Q sub-interface (`vmbr0.30`) rides on top of the same bridge, giving the hypervisor itself a tagged presence on SERVERS without needing its own physical port.
+Prometheus pulls metrics from exporters on a schedule; Grafana queries Prometheus as its only data source and stores nothing of its own. Everything in this stack lives on one dedicated CT, deployed in four phases — core stack + host metrics, container metrics, service-specific exporters, then uptime/availability checks — rather than all at once, specifically to understand how each layer works before adding the next.
 
 ```mermaid
-flowchart TB
-    TRUNK["Physical NIC — trunk port\n(USW-Lite-16-PoE, Proxmox-Trunk profile)"] --> BR
-
-    subgraph BR["vmbr0 — bridge-vlan-aware yes, bridge-vids 2-4094"]
+flowchart LR
+    subgraph TARGETS["Scrape targets"]
         direction TB
-        HOSTIF["vmbr0.30\nhost mgmt IP\n192.168.130.253"]
-        VM100["VM 100 net0\nPBS (backup)\ntag=30 -> .252"]
-        CT200["CT 200 net0\ntag=30 -> .200"]
-        CT201["CT 201 net0\ntag=30 -> .201"]
-        CT202["CT 202 net0\ntag=30 -> .202"]
+        NE1["node_exporter\n(Proxmox host, bare-metal)"]
+        NE2["node_exporter\n(CT 202, self)"]
+        CA["cAdvisor x3\n(CT 200 / 201 / 202)"]
+        PH["Pi-hole exporter\n(CT 200)"]
+        OP["OPNsense exporter\n(REST API)"]
+        BB["blackbox_exporter\n(/probe)"]
+        PBSE["pbs-exporter\n(PBS REST API)"]
     end
 
-    classDef host fill:#2e7d32,stroke:#1b5e20,color:#fff
-    classDef guest fill:#1565c0,stroke:#0d47a1,color:#fff
-    class HOSTIF host
-    class VM100,CT200,CT201,CT202 guest
-```
+    PROM["Prometheus\nCT 202 — pull, 15s interval"]
+    GRAF["Grafana\nCT 202 — queries Prometheus only"]
 
-```
-auto vmbr0
-iface vmbr0 inet manual
-        bridge-ports nic0
-        bridge-stp off
-        bridge-fd 0
-        bridge-vlan-aware yes
-        bridge-vids 2-4094
+    NE1 --> PROM
+    NE2 --> PROM
+    CA --> PROM
+    PH --> PROM
+    OP --> PROM
+    BB -->|"probes 4 admin UIs\n+ external connectivity"| PROM
+    PBSE --> PROM
+    PROM --> GRAF
 
-auto vmbr0.30
-iface vmbr0.30 inet static
-        address 192.168.130.253/24
-        gateway 192.168.130.254
-        vlan-raw-device vmbr0
+    classDef target fill:#1565c0,stroke:#0d47a1,color:#fff
+    classDef core fill:#2e7d32,stroke:#1b5e20,color:#fff
+    class NE1,NE2,CA,PH,OP,BB,PBSE target
+    class PROM,GRAF core
 ```
-
-Both mechanisms coexist cleanly on the same bridge and the same physical trunk port (the switch's `Proxmox-Trunk` profile, tagged for SERVERS — see [`unifi.md`](unifi.md)) — there's no conflict between "the host has a tagged IP" and "guests get their own tags," since they're handled by different layers of the same bridge.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
-## Where Proxmox lives on the network — and why
+## Deployment
 
-Proxmox's management IP initially sat on the untagged native (MGMT) segment, alongside OPNsense's own base interface, the switch, and the AP — simply because that's where it happened to land during initial provisioning, before VLAN segmentation existed yet. Once VLANs were live, this became a real architectural question worth resolving deliberately rather than leaving as an accident of history: MGMT's entire design purpose is staying the one segment never touched during VLAN work, so a mistake anywhere else can't strand access to the core network gear needed to fix it. A hypervisor running actual production-ish workloads doesn't fit that "core network gear, nothing else" description — it's a workload, not infrastructure you'd use to rescue a broken VLAN.
-
-The alternative considered was dual-homing — giving Proxmox a secondary address on MGMT as an out-of-band fallback, in addition to its primary SERVERS VLAN address, for resilience if SERVERS-side routing or firewall rules ever broke. That idea didn't survive scrutiny: since normal day-to-day access to Proxmox comes from TRUSTED (routed through OPNsense, which already has a full bidirectional Pass rule between TRUSTED and SERVERS), a working fallback IP would need to be reachable from TRUSTED too — and if it's reachable from TRUSTED, the isolation benefit MGMT was supposed to preserve is already gone. A fallback that only works when physically local isn't a fallback for a remotely-managed hypervisor; it's just a second address that adds attack surface without adding real resilience.
-
-Proxmox's management IP now lives entirely on SERVERS (VLAN 30), with no presence on MGMT at all. The tradeoff accepted deliberately: if SERVERS VLAN routing or firewall config ever breaks, the hypervisor becomes unreachable over the network, full stop — local console access becomes the only way in. Clean isolation, at the cost of losing a network-based break-glass path for the hypervisor specifically (core network gear — the firewall, switch, and AP — keep theirs on MGMT, unaffected).
-
-> **Why it matters:** this is the same "workload vs. infrastructure" boundary that governs management-plane segmentation in production networks — the systems used to *fix* a broken network stay on a segment that outages elsewhere can't touch, while everything else, however important, is treated as a workload with an accepted blast radius.
+Runs as `CT 202` on Proxmox (SERVERS `192.168.130.202`, tag 30) — Debian 13, unprivileged LXC, `--features nesting=1` set at creation for Docker support (see [`proxmox.md` §Known issues](proxmox.md#known-issues--lessons)). All services live under `/opt/monitoring-stack/` as a single Docker Compose project.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
-## Guests
+## Architecture
 
-| VMID | Hostname     | Role                                        | Network                | Status |
-| ----- | ------------ | -------------------------------------------- | ------------------------ | ------ |
-| 100   | `pbs`        | Proxmox Backup Server (VM)                   | SERVERS `.252`, tag 30  | Live   |
-| 200   | `pihole`     | Pi-hole (network-wide DNS + ad-blocking)     | SERVERS `.200`, tag 30  | Live   |
-| 201   | `unifi-os`   | UniFi OS Server (Podman, privileged LXC)     | SERVERS `.201`, tag 30  | Live   |
-| 202   | `monitoring` | Prometheus + Grafana + exporters             | SERVERS `.202`, tag 30  | Live   |
+- **Pull-based scraping.** Every exporter exposes a `/metrics` endpoint; Prometheus polls each one on a 15-second `scrape_interval` and stores the time series itself. Grafana never talks to exporters directly — only to Prometheus.
+- **`network_mode: host` on every container**, the same pattern used throughout this build, for reliable reachability across VLANs rather than being boxed in behind Docker's bridge NAT.
+- **Explicit IPs in every Prometheus target, not `localhost`.** Prometheus derives its `instance` label directly from the configured target address — `localhost:PORT` is ambiguous and non-self-documenting once there's more than one host in the fleet, so every target in `prometheus.yml` uses the real IP of the thing it's scraping.
+- **`node_exporter` must run on the actual physical or logical host it reports on.** A containerized instance can only ever see the container's own view of resources — it can't see the true hypervisor's CPU/RAM/disk. This is why there are two separate `node_exporter` instances: one running as a native systemd service directly on the Proxmox host itself, and one running inside `CT 202` for the monitoring stack's own self-monitoring.
 
-`VM 100` is the first guest under the [VM/CT numbering convention](#vmct-numbering-convention) above, and the only VM in the fleet so far — everything else is an LXC. Its address (`.252`) deliberately breaks the VMID-matches-last-octet pattern; documented here as a known, intentional exception rather than an inconsistency to "fix" later.
+> **Why it matters:** pull-based scraping with self-documenting instance labels and one system of record for time series is the same architecture used by Prometheus deployments at any scale — the difference between a home-lab install and a production one here is target count, not design.
 
-`CT 200` was originally the Docker-based UniFi Network Application, destroyed once the migration to UniFi OS Server (`CT 201`) was confirmed stable (see [`unifi.md`](unifi.md)). Its freed VMID and IP were later reused when Pi-hole was deployed, rather than issuing a new one — consistent with the VMID-to-IP convention below.
+```yaml
+# docker-compose.yml (excerpt) — prometheus + grafana, network_mode: host throughout
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/data:/prometheus
 
-`CT 201` runs as a **privileged** LXC — a deliberate, documented exception to running everything unprivileged by default, required because UniFi OS Server's installer needs to write a specific sysctl that the kernel refuses from a non-initial user namespace (i.e., any unprivileged container). Full reasoning and the debugging path that led to this conclusion are in [`unifi.md`](unifi.md).
-
-`CT 200` and `CT 202` are both **unprivileged** LXCs (Debian 13) running Docker via Docker Compose — the default posture for anything that doesn't have `CT 201`'s specific kernel-level requirement. `CT 202` was created with:
-
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - ./grafana/data:/var/lib/grafana
 ```
-pct create 202 local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst \
-  --hostname monitoring \
-  --net0 name=eth0,bridge=vmbr0,tag=30,ip=192.168.130.202/24,gw=192.168.130.254 \
-  --storage local-zfs \
-  --rootfs local-zfs:8 \
-  --memory 2048 \
-  --cores 2 \
-  --unprivileged 1 \
-  --features nesting=1 \
-  --onboot 1
-```
-
-`--features nesting=1` is the one flag that's easy to forget and expensive to retrofit — see [Known issues](#known-issues--lessons).
-
-Container-to-IP convention: where practical, a container's last-two-IP-digits match its Proxmox VMID (`CT 202` → `.202`), making the relationship between "which container is this" and "what's its address" readable at a glance without needing to look anything up.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
 ---
 
-## Backup infrastructure (Proxmox Backup Server)
+## Phase 1 — core stack and host metrics
 
-`VM 100` runs Proxmox Backup Server (PBS), deliberately split across both storage tiers rather than living entirely on one:
+Prometheus + Grafana + two `node_exporter` instances (Proxmox host, monitoring CT itself). Grafana's official "Node Exporter Full" community dashboard covers both out of the box, filterable by host.
 
-- **`scsi0` (OS disk, 8G) — `local-zfs`**, on the mirrored NVMe pair. If the HDD ever dies, PBS itself survives cleanly on redundant storage; only the backup data on `scsi1` is lost.
-- **`scsi1` (datastore disk, 350G) — a zvol on `hdd-pool`**, the single HDD. This is where actual backup chunks live — the split matters specifically so a single-disk failure doesn't take out the VM *and* its backups together.
+```yaml
+# prometheus.yml (excerpt) — Phase 1
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["192.168.130.202:9090"]
 
-> **Why it matters:** this OS/data split is the same reasoning behind never putting a database's WAL and its backups on the same failure domain — the backup target itself needs to survive independently of what it's protecting.
+  - job_name: "node-monitoring-ct"
+    static_configs:
+      - targets: ["192.168.130.202:9100"]
 
-**Provisioning sequence** (`hdd-pool` and its zvol created first, see [Storage](#storage)):
-
-```
-# register the HDD's ZFS pool as Proxmox storage
-pvesm add zfspool hdd-pool --pool hdd-pool --content images,rootdir
-
-# carve the 350G datastore disk out of it
-zfs create -V 350G hdd-pool/pbs-disk
-
-# allocate the OS disk on the NVMe mirror separately (see Known issues —
-# qm create can't reliably allocate a new zvol AND reference a raw device
-# path in the same invocation)
-pvesm alloc local-zfs 100 vm-100-disk-0 8G
-
-# create the VM without scsi0, then attach the disk allocated above
-qm create 100 \
-  --name pbs \
-  --memory 2048 \
-  --cores 2 \
-  --net0 virtio,bridge=vmbr0,tag=30 \
-  --scsihw virtio-scsi-pci \
-  --scsi1 /dev/zvol/hdd-pool/pbs-disk \
-  --ide2 local:iso/proxmox-backup-server_4.2-1.iso,media=cdrom \
-  --boot order=ide2 \
-  --ostype l26
-
-qm set 100 --scsi0 local-zfs:vm-100-disk-0
+  - job_name: "node-proxmox-host"
+    static_configs:
+      - targets: ["192.168.130.253:9100"]
 ```
 
-**PBS-side setup**, once installed and reachable at `192.168.130.252:8007`:
-- Fresh installs need the enterprise repo (`pbs-enterprise`) disabled and the free `pbs-no-subscription` repo enabled before `apt update` will work without a paid subscription — see [Known issues](#known-issues--lessons).
-- Datastore: a single-disk directory datastore (`ext4`, name `backups`) on the `hdd-pool` zvol, created via **Administration → Disks → Directory → Create: Directory** with "Add as Datastore" checked — PBS's own chunk-level SHA256 integrity checking makes a second layer of ZFS-on-the-zvol redundant.
-- A dedicated, least-privilege user (`pve-backup@pbs`, role `DatastoreBackup` scoped to `/datastore/backups`) authenticates the connection from Proxmox — consistent with the least-privilege service-account pattern used everywhere else in this build (OPNsense's `monitoring-api`, Pi-hole's scoped App Password).
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
-**Backup job** (Proxmox host, `/etc/pve/jobs.cfg`): daily at 03:00, `snapshot` mode, `zstd` compression, targeting `backups-pbs` for `CT 200/201/202`.
+---
 
-**Retention and space reclamation** (PBS side, not the backup job itself — retention on a PBS-backed datastore is managed by PBS's own Prune jobs):
-- Prune job `daily-prune`: daily at 04:00, `keep-daily 7 / keep-weekly 4 / keep-monthly 6`.
-- Garbage collection: weekly, Sunday 05:00 — offset from the backup/prune window so it isn't contending for I/O with either.
+## Phase 2 — container metrics
+
+cAdvisor deployed on all three existing CTs (Pi-hole, UniFi OS, and the monitoring CT itself), reading container-level metrics via each host's container runtime socket:
+
+- **Docker CTs** (Pi-hole, monitoring): standard cAdvisor deployment against the Docker socket.
+- **The Podman CT (UniFi OS, `CT 201`):** deployed via plain `podman run` rather than Compose, since Ubiquiti's own installer owns that container runtime. Podman doesn't expose its API socket by default, so cAdvisor initially fell back to a degraded generic "Raw" cgroup-based factory — real metrics, but no container names or labels. Fixed by enabling `podman.socket` explicitly and remounting it into a recreated cAdvisor container:
+
+```
+podman run -d --name=cadvisor --restart=unless-stopped --network=host --privileged \
+  -v /:/rootfs:ro -v /var/run:/var/run:ro -v /sys:/sys:ro \
+  -v /run/podman/podman.sock:/var/run/podman/podman.sock:ro \
+  gcr.io/cadvisor/cadvisor:latest --port=8081
+```
+
+Also needed a port change (`--port=8081`) since cAdvisor's default 8080 collides with UniFi OS Server's own device-inform channel.
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
+
+---
+
+## Phase 3 — service-specific exporters
+
+**Pi-hole** — a custom-built exporter wrapping `bazmonk/pihole6_exporter` (no official image exists), since Pi-hole v6's session-based App Password auth broke compatibility with older exporters. Full detail in [`pihole.md` §Monitoring integration](pihole.md#monitoring-integration).
+
+**OPNsense** — `ghcr.io/athennamind/opnsense-exporter`, calling OPNsense's own REST API over HTTPS with a dedicated least-privilege `monitoring-api` user and API key/secret (see [`opnsense.md` §Monitoring API access](opnsense.md#monitoring-api-access)):
+
+```yaml
+  opnsense-exporter:
+    image: ghcr.io/athennamind/opnsense-exporter:latest
+    container_name: opnsense-exporter
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - OPNSENSE_EXPORTER_OPS_API_KEY=${OPNSENSE_API_KEY}
+      - OPNSENSE_EXPORTER_OPS_API_SECRET=${OPNSENSE_API_SECRET}
+    command:
+      - "--opnsense.protocol=https"
+      - "--opnsense.address=192.168.130.254"
+      - "--opnsense.insecure"
+      - "--exporter.instance-label=opnsense-fw"
+      - "--web.listen-address=:8082"
+```
+
+Every endpoint returned `context deadline exceeded` on first deploy — a plain `curl` from the Proxmox host to the firewall's SERVERS IP timed out identically, which isolated the problem to the firewall itself rather than the exporter or a routing/firewall-rule issue. Root cause: System → Settings → Administration → **Listen Interfaces** was scoped to `LAN` only, so the API/GUI daemon never bound a listening socket on SERVERS at all — indistinguishable from a firewall block until traced this specifically. Fixed by adding SERVERS to that list.
+
+> **Why it matters:** distinguishing "the service refused the connection" from "nothing is listening on that interface" from "a firewall dropped the packet" is exactly the kind of layered troubleshooting production on-call work requires — each looks identical from the client side (a timeout), and confirming which one it is (a bare `curl` from a box on the same subnet, bypassing routing/firewall entirely) is what actually narrows it down.
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
+
+---
+
+## Phase 4 — uptime and availability checks
+
+`prom/blackbox-exporter`, scraped indirectly: Prometheus targets blackbox's own `/probe` endpoint with `params.module` and `target`, then uses `relabel_configs` to rewrite `__address__`/`instance` to reflect the real target rather than blackbox itself. Two modules in use:
+
+```yaml
+# blackbox.yml
+modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: []
+      method: GET
+      tls_config:
+        insecure_skip_verify: true
+  icmp:
+    prober: icmp
+    timeout: 5s
+```
+
+```yaml
+# prometheus.yml (excerpt) — indirect scrape pattern
+  - job_name: "blackbox_http"
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://192.168.130.200/admin/
+          - https://192.168.130.254/
+          - https://192.168.130.201:11443/
+          - http://192.168.130.202:3000/
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 192.168.130.202:9115
+```
+
+- `http_2xx` — the four admin UIs: Pi-hole, OPNsense, UniFi OS Server (port `11443`), and Grafana itself.
+- `icmp` — external connectivity, probing `1.1.1.1` (requires `cap_add: [NET_RAW]` on the container).
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
+
+---
+
+## Phase 5 — Proxmox Backup Server exporter
+
+`ghcr.io/natrontech/pbs-exporter`, calling PBS's own REST API to expose datastore usage, per-guest backup/verify status, and PBS host resource metrics (CPU, memory, load, uptime, disk). Same dedicated-least-privilege-credential pattern as the Pi-hole and OPNsense exporters: a `monitoring@pbs` user with an API token scoped to the `Audit` role at `/`, granted **both** to the token principal and to its parent user (see gotcha below).
+
+```yaml
+  pbs-exporter:
+    image: ghcr.io/natrontech/pbs-exporter:latest
+    container_name: pbs-exporter
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ./pbs-exporter.env    # PBS_API_TOKEN only — see gotcha below
+    environment:
+      - PBS_ENDPOINT=https://192.168.130.252:8007
+      - PBS_USERNAME=monitoring@pbs
+      - PBS_API_TOKEN_NAME=monitoring-exporter
+      - PBS_INSECURE=true
+      - PBS_LISTEN_ADDRESS=:10019
+```
+
+Key metrics exposed: `pbs_up`, `pbs_available`/`pbs_size`/`pbs_used` (per datastore), `pbs_snapshot_vm_last_timestamp`/`pbs_snapshot_vm_last_verify` (per guest), and the `pbs_host_*` family (cpu_usage, memory_used/total, load1/5/15, uptime, disk_used/total).
+
+This exporter took far longer to get working than the others in this stack — not because of a config mistake in the compose file, but because of a genuine PBS permission-model gap that produced a **misleading, endpoint-specific 403** even with a verified-correct token and a verified-correct ACL grant. Full gotcha writeup below.
+
+> **Why it matters:** the debugging path here — confirm the credential is byte-for-byte correct, confirm the ACL grant exists, and only then suspect the platform's own permission model rather than the credential — is the same discipline that matters when chasing a "valid token, still 403" bug against any cloud IAM system (AWS, Azure, GCP all have their own versions of this: a correctly-scoped resource policy that's still overridden by a missing identity-level grant).
+
+<div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
+
+---
+
+## Targets reference
+
+| Job | Target(s) |
+| --- | --- |
+| `prometheus` | `192.168.130.202:9090` |
+| `node-monitoring-ct` | `192.168.130.202:9100` |
+| `node-proxmox-host` | `192.168.130.253:9100` |
+| `cadvisor-monitoring-ct` | `192.168.130.202:8080` |
+| `cadvisor-pihole-ct` | `192.168.130.200:8080` |
+| `cadvisor-unifi-ct` | `192.168.130.201:8081` |
+| `pihole-exporter` | `192.168.130.200:9666` |
+| `opnsense-exporter` | `192.168.130.202:8082` |
+| `blackbox_http` | `https://192.168.130.200/admin/`, `https://192.168.130.254/`, `https://192.168.130.201:11443/`, `http://192.168.130.202:3000/` (via `192.168.130.202:9115`) |
+| `blackbox_icmp` | `1.1.1.1` (via `192.168.130.202:9115`) |
+| `pbs-exporter` | `192.168.130.202:10019` |
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
 
@@ -200,13 +277,16 @@ qm set 100 --scsi0 local-zfs:vm-100-disk-0
 
 ## Known issues & lessons
 
-- **`qm create` can hang or time out indefinitely when mixing a storage-managed disk with a raw device-path disk in the same command.** Creating `VM 100` with both `--scsi0 local-zfs:vm-100-disk-0,size=8G` (needs fresh allocation) and `--scsi1 /dev/zvol/hdd-pool/pbs-disk` (an existing raw path) in one `qm create` call left the process polling forever for a zvol device link that was never created — `zfs list -t volume` confirmed the disk never actually got created at the ZFS layer, even though the identical `zfs create` command worked instantly by hand, and `pvesm alloc` (the same primitive `qm create` uses internally) also succeeded instantly in isolation. Root cause not fully identified — isolated to `qm create`'s own disk-allocation orchestration, not the ZFS layer, udev, or the storage plugin, all of which tested healthy independently. Workaround: allocate the storage-managed disk separately first (`pvesm alloc <storage> <vmid> <disk-name> <size>`), create the VM without that disk in the initial `qm create`, then attach it afterward with `qm set <vmid> --scsi0 <storage>:<disk-name>` (no `,size=` — that's what tells Proxmox to attach an existing disk rather than allocate a new one).
-- **A fresh PBS/PVE install without a paid subscription needs the enterprise repo disabled manually**, or `apt update` 401s. Current (deb822 `.sources` format) repos don't necessarily ship an `Enabled:` line at all — a `sed` targeting `Enabled: yes` silently does nothing if that line doesn't exist; check with `cat` first, and append `Enabled: false` explicitly if it's missing, rather than assuming the line is present to toggle.
-- **Audit `/etc/pve/jobs.cfg` before adding a new backup job.** A pre-existing weekly `vzdump` job (`all=1`, Saturday 03:00, targeting `local`) predated the PBS build and wasn't discovered until after the new daily PBS-targeted job was created — both would have fired at the same time every Saturday, double-backing-up the same guests to two different storages simultaneously. Worth a `cat`/`pvesh get /cluster/backup` check any time a new backup job is added, not just when troubleshooting one that already exists.
-- **`/etc/hosts` doesn't follow interface IP changes automatically.** Changing a host's network config updates routing and reachability, but any hostname-to-IP mapping baked into `/etc/hosts` stays stale until manually updated — worth checking any time a host's own IP moves, not just the interface config itself.
-- **`ifreload -a` applies interface changes without a full reboot, but still drops the current session** if the interface you're connected through is the one being changed — functionally identical to a reboot from the perspective of "will this session survive," even though the rest of the system stays running throughout.
-- **A container's IP and its VMID drift apart over time if not enforced.** The convention only holds if it's actively maintained during provisioning and renumbering — it's not something Proxmox tracks or enforces on its own.
-- **Flipping `unprivileged: 0`/`1` on an existing container changes UID mapping going forward, but not retroactively** — see [`unifi.md`](unifi.md) for what happens when that assumption is wrong.
-- **Docker inside an unprivileged LXC needs `--features nesting=1` set at `pct create` time.** Without it, the container can't nest the cgroup/namespace machinery Docker itself needs, and the runtime won't start. This isn't something to retrofit cleanly after the fact — set it at creation.
+- **Bind-mounted data directories must be pre-chowned to the exporter's actual runtime UID.** `prom/prometheus` runs as UID `65534` (nobody), `grafana/grafana` as UID `472` — root-owned bind mounts crash-loop both containers with permission-denied errors on first start.
+- **`GF_SECURITY_ADMIN_PASSWORD` only applies on first database initialization.** Resetting Grafana's admin password afterward requires `docker exec grafana grafana cli admin reset-admin-password '<value>'` — note the current image invokes this as the `grafana cli` subcommand, not the old standalone `grafana-cli` binary, which doesn't exist in this image version.
+- **Don't guess exporter version numbers.** A guessed `node_exporter` version 404'd on download; querying the project's GitHub releases API for the real current tag is one extra step that avoids it entirely.
+- **Podman doesn't expose its API socket by default**, so cAdvisor falls back to a degraded "Raw" cgroup factory (works, but no real container names/labels) until `podman.socket` is enabled explicitly.
+- **Port collisions are a real risk under `network_mode: host`.** cAdvisor's default port (8080) collided with UniFi OS Server's own device-inform channel on `CT 201`; solved by moving cAdvisor to 8081 there rather than touching UniFi's port.
+- **OPNsense's Listen Interfaces setting scopes more than the web GUI** — an interface left out of that list produces a full connection timeout indistinguishable from "nothing is listening," not a firewall rejection. Full detail in [`opnsense.md` §Known issues](opnsense.md#known-issues--lessons).
+- **Blackbox exporter is scraped indirectly**, via its own `/probe` endpoint with relabeling — a fundamentally different pattern from every direct exporter in this stack. Worth remembering before debugging a "target down": it could be blackbox itself unreachable, not the real target.
+- **`podman logs` requires flags before the container name** (`podman logs --tail 20 cadvisor`), unlike Docker's more flexible argument ordering.
+- **PBS API token privilege separation: an ACL grant on the token alone is not always enough.** By default, a PBS API token is a separate ACL principal from its parent user (`user@realm!tokenname` vs. `user@realm`), and granting a role to the token principal is the normal, correct way to authorize it — this is exactly what worked for the general datastore-status endpoints. But at least one endpoint (`/nodes/{node}/status` — the host resource metrics: CPU, memory, load, uptime) kept returning `403 Forbidden: permission check failed` even with a confirmed-correct token and a confirmed-correct `Audit` grant on the token principal. The fix was granting the *same* role to the underlying user (`monitoring@pbs`) as well, not just the token (`monitoring@pbs!monitoring-exporter`). Confirmed via `journalctl -u proxmox-backup-proxy` on the PBS host, which logs the exact API path denied — far more useful for this than the exporter's own generic `403` log line. **If a new token-authenticated integration gets a 403 on some endpoints but not others despite a correct-looking ACL, grant the role to both the token and its parent user before assuming the token itself is wrong.**
+- **`docker restart` does not reload `.env` — only `docker compose up -d` (recreate) or an explicit `--force-recreate` picks up a changed value.** A container that was already running when `.env` was edited will keep serving the stale environment indefinitely across plain restarts. Confirmed by comparing `md5sum` of the value inside the running container (`docker inspect <name> --format '{{range .Config.Env}}{{println .}}{{end}}'`) against the current file contents — a mismatch there is the tell.
+- **`docker exec <container> cat ...` silently fails on distroless/`ko`-built images** (no shell, no coreutils inside the image at all — `pbs-exporter` is one of these). A failed `docker exec` piped into `grep -c` can read as a clean "0 matches" instead of an obvious error, which looks identical to "the variable is genuinely missing." To check a running container's real environment without relying on anything inside the image, read it straight from the kernel on the host instead: `docker inspect <name> --format '{{.State.Pid}}'`, then `cat /proc/<pid>/environ | tr '\0' '\n'` as root on the host — this works against any container regardless of what's installed inside it.
 
 <div align="right"><sub><a href="#table-of-contents">↑ Back to Table of Contents</a></sub></div>
